@@ -9,7 +9,6 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "esm-potrace-wasm": "^0.4.4",
     "p5": "^2.3.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7"

@@ -1,14 +1,16 @@
 import { useRef } from 'react';
-import { HalftoneParams, GridType, ExportFormat } from '../types';
+import { HalftoneParams, GridType, CanvasFormat, ExportFormat } from '../types';
 
 interface Props {
   params: HalftoneParams;
   onChange: (params: HalftoneParams) => void;
   onImageLoad: (url: string) => void;
   onExport: (format: ExportFormat) => void;
+  onOpenCrop: () => void;
+  hasImage: boolean;
 }
 
-export default function ControlSidebar({ params, onChange, onImageLoad, onExport }: Props) {
+export default function ControlSidebar({ params, onChange, onImageLoad, onExport, onOpenCrop, hasImage }: Props) {
   const objectUrlRef = useRef<string | null>(null);
 
   function set<K extends keyof HalftoneParams>(key: K, value: HalftoneParams[K]) {
@@ -50,6 +52,49 @@ export default function ControlSidebar({ params, onChange, onImageLoad, onExport
         unit="px"
       />
 
+      <div className="control-group">
+        <label className="control-label">Format</label>
+        <div className="toggle-group toggle-group--wrap">
+          {(
+            [
+              ['auto', 'Fit Image'],
+              ['din-portrait', 'DIN Hoch'],
+              ['din-landscape', 'DIN Quer'],
+              ['square', '1:1'],
+            ] as [CanvasFormat, string][]
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              className={`toggle-btn${params.canvasFormat === value ? ' active' : ''}`}
+              onClick={() => set('canvasFormat', value)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {params.canvasFormat !== 'auto' && hasImage && (
+        <button className="position-btn" onClick={onOpenCrop}>
+          Bild positionieren…
+        </button>
+      )}
+
+      <div className="control-group">
+        <div className="checkbox-row">
+          <input
+            type="checkbox"
+            id="preview-mode"
+            checked={params.preview}
+            onChange={e => set('preview', e.target.checked)}
+            className="checkbox-input"
+          />
+          <label htmlFor="preview-mode" className="control-label checkbox-label">
+            Preview (fast, reduced resolution)
+          </label>
+        </div>
+      </div>
+
       <SliderControl
         label="Step Size"
         value={params.stepSize}
@@ -86,13 +131,23 @@ export default function ControlSidebar({ params, onChange, onImageLoad, onExport
       />
 
       <SliderControl
+        label="Pre-Blur"
+        value={params.preBlur}
+        min={0}
+        max={20}
+        step={0.5}
+        onChange={v => set('preBlur', v)}
+        unit="px"
+        decimals={1}
+      />
+
+      <SliderControl
         label="Noise Amount"
         value={params.noiseAmount}
         min={0}
-        max={20}
+        max={100}
         step={1}
         onChange={v => set('noiseAmount', v)}
-        unit="px"
       />
 
       <SliderControl
@@ -122,16 +177,6 @@ export default function ControlSidebar({ params, onChange, onImageLoad, onExport
         step={1}
         onChange={v => set('maxDotSize', v)}
         unit="px"
-      />
-
-      <SliderControl
-        label="Corner Radius"
-        value={params.cornerRadiusPct}
-        min={0}
-        max={50}
-        step={1}
-        onChange={v => set('cornerRadiusPct', v)}
-        unit="%"
       />
 
       <SliderControl

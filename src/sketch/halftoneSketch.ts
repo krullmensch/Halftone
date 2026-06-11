@@ -1,11 +1,82 @@
 import p5 from 'p5';
-import { potrace } from 'esm-potrace-wasm';
 import type { HalftoneParams, ExportFormat, SketchHandle } from '../types';
 import { DEFAULT_PARAMS } from '../types';
+
+/** Longest canvas side while preview mode is active. */
+const PREVIEW_MAX = 1000;
+
+/**
+ * Trace the boundary between ink (1) and background (0) pixels of a W×H mask
+ * into SVG path data. Each ink/background pixel edge becomes a unit grid edge,
+ * directed so ink stays on the left; the edges stitch into closed loops where
+ * outer contours wind clockwise and holes counter-clockwise (nonzero fill rule
+ * then carves holes out). Axis-aligned, so it reproduces the raster exactly —
+ * including ink-bleed-merged blobs.
+ */
+function traceContours(mask: Uint8Array, W: number, H: number): string {
+  const stride = W + 1;
+  // Outgoing directed edges per grid vertex (vertex key = y*stride + x).
+  const out = new Map<number, number[]>();
+  const addEdge = (sx: number, sy: number, ex: number, ey: number) => {
+    const sk = sy * stride + sx;
+    const ek = ey * stride + ex;
+    const arr = out.get(sk);
+    if (arr) arr.push(ek);
+    else out.set(sk, [ek]);
+  };
+  const ink = (x: number, y: number) =>
+    x >= 0 && y >= 0 && x < W && y < H && mask[y * W + x] === 1;
+
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      if (mask[y * W + x] !== 1) continue;
+      if (!ink(x, y - 1)) addEdge(x, y, x + 1, y);             // top → right
+      if (!ink(x, y + 1)) addEdge(x + 1, y + 1, x, y + 1);     // bottom → left
+      if (!ink(x - 1, y)) addEdge(x, y + 1, x, y);             // left → up
+      if (!ink(x + 1, y)) addEdge(x + 1, y, x + 1, y + 1);     // right → down
+    }
+  }
+
+  let d = '';
+  for (const [startKey, arr] of out) {
+    while (arr.length > 0) {
+      let curKey = startKey;
+      const sx = startKey % stride;
+      const sy = (startKey - sx) / stride;
+      let segs = `M${sx} ${sy}`;
+      let prevDx = 0, prevDy = 0;
+      let lastX = sx, lastY = sy;
+      let count = 0;
+      while (true) {
+        const outs = out.get(curKey);
+        if (!outs || outs.length === 0) break;
+        const nextKey = outs.pop()!;
+        const nx = nextKey % stride;
+        const ny = (nextKey - nx) / stride;
+        const dx = Math.sign(nx - lastX);
+        const dy = Math.sign(ny - lastY);
+        if (count > 0 && dx === prevDx && dy === prevDy) {
+          // Collinear: extend the previous segment instead of adding a vertex.
+          segs = segs.slice(0, segs.lastIndexOf('L'));
+        }
+        segs += `L${nx} ${ny}`;
+        prevDx = dx; prevDy = dy;
+        lastX = nx; lastY = ny;
+        curKey = nextKey;
+        count++;
+        if (curKey === startKey) break;
+      }
+      if (count >= 2) d += segs + 'Z';
+    }
+  }
+  return d;
+}
 
 export function createSketch(container: HTMLElement): SketchHandle {
   let currentParams: HalftoneParams = { ...DEFAULT_PARAMS };
   let loadedImage: p5.Image | null = null;
+  // Forces full-resolution rendering during exports even when preview is on
+  let exportFullRes = false;
 
   // Current canvas / buffer dimensions (longest side = canvasSize, aspect-correct)
   let cw = currentParams.canvasSize;
@@ -15,11 +86,6 @@ export function createSketch(container: HTMLElement): SketchHandle {
   let pg: p5.Graphics | null = null;
   // Offscreen buffer holding the source image scaled to cw × ch
   let src: p5.Graphics | null = null;
-
-  // Collected dot geometry for SVG export (cleared at start of each draw)
-  // Note: ink bleed merging is raster-only and is not represented in SVG.
-  interface DotRecord { x: number; y: number; size: number; r: number }
-  let dots: DotRecord[] = [];
 
   // ---------------------------------------------------------------- helpers
 
@@ -36,11 +102,42 @@ export function createSketch(container: HTMLElement): SketchHandle {
   }
 
   /**
+   * Resolution scale factor: < 1 while preview mode is on (and not exporting).
+   * All px-based params are multiplied by this so the preview looks identical.
+   */
+  function renderScale(): number {
+    if (exportFullRes || !currentParams.preview) return 1;
+    return Math.min(1, PREVIEW_MAX / currentParams.canvasSize);
+  }
+
+  /** Deterministic PRNG so the source grain is stable across re-renders. */
+  function mulberry32(seed: number): () => number {
+    let a = seed >>> 0;
+    return () => {
+      a = (a + 0x6d2b79f5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  /**
    * Compute w/h so the longest side equals canvasSize and aspect ratio matches
    * the loaded image. If no image is loaded, keeps square canvasSize × canvasSize.
    */
   function computeDims(): { w: number; h: number } {
-    const size = currentParams.canvasSize;
+    const size = Math.round(currentParams.canvasSize * renderScale());
+    const fmt = currentParams.canvasFormat;
+    if (fmt === 'din-portrait') {
+      return { w: Math.max(1, Math.round(size / Math.SQRT2)), h: size };
+    }
+    if (fmt === 'din-landscape') {
+      return { w: size, h: Math.max(1, Math.round(size / Math.SQRT2)) };
+    }
+    if (fmt === 'square') {
+      return { w: size, h: size };
+    }
+    // 'auto': follow image aspect, square if no image
     if (!loadedImage) return { w: size, h: size };
     const imgW = loadedImage.width;
     const imgH = loadedImage.height;
@@ -74,13 +171,42 @@ export function createSketch(container: HTMLElement): SketchHandle {
   }
 
   /**
-   * Scale the loaded image into the src buffer (no cropping), then reload pixels.
+   * Scale the loaded image into the src buffer (no cropping), apply optional
+   * pre-blur and luminance grain, then reload pixels for sampling.
    */
   function rebuildSrc(): void {
     if (!loadedImage || !src) return;
+    const { preBlur, noiseAmount } = currentParams;
+    const scale = renderScale();
+
     src.clear();
     src.background(255);
-    src.image(loadedImage, 0, 0, cw, ch);
+
+    const ctx = (src as any).drawingContext as CanvasRenderingContext2D;
+    const imgW = loadedImage.width;
+    const imgH = loadedImage.height;
+    const s = Math.max(cw / imgW, ch / imgH);
+    const dw = imgW * s;
+    const dh = imgH * s;
+    const dx = -(dw - cw) * currentParams.imageOffsetX;
+    const dy = -(dh - ch) * currentParams.imageOffsetY;
+    if (preBlur > 0) ctx.filter = `blur(${preBlur * scale}px)`;
+    src.image(loadedImage, dx, dy, dw, dh);
+    if (preBlur > 0) ctx.filter = 'none';
+
+    if (noiseAmount > 0) {
+      const imgData = ctx.getImageData(0, 0, cw, ch);
+      const d = imgData.data;
+      const rand = mulberry32(1337);
+      for (let i = 0; i < d.length; i += 4) {
+        const n = (rand() - 0.5) * 2 * noiseAmount;
+        d[i]     = Math.max(0, Math.min(255, d[i] + n));
+        d[i + 1] = Math.max(0, Math.min(255, d[i + 1] + n));
+        d[i + 2] = Math.max(0, Math.min(255, d[i + 2] + n));
+      }
+      ctx.putImageData(imgData, 0, 0);
+    }
+
     src.loadPixels();
   }
 
@@ -93,7 +219,8 @@ export function createSketch(container: HTMLElement): SketchHandle {
    *   2. Colorize per pixel using dotColor / bgColor / transparentBg.
    */
   function applyPost(pg: p5.Graphics, params: HalftoneParams): void {
-    const { inkBleed: radius, dotColor, bgColor, transparentBg } = params;
+    const { inkBleed, dotColor, bgColor, transparentBg } = params;
+    const radius = inkBleed * renderScale();
     const w = pg.width;
     const h = pg.height;
 
@@ -184,15 +311,16 @@ export function createSketch(container: HTMLElement): SketchHandle {
         stepSize,
         gridType,
         gridAngle,
-        noiseAmount,
         halftoneThreshold,
         minDotSize,
         maxDotSize,
-        cornerRadiusPct,
       } = currentParams;
 
+      const scale = renderScale();
       // Guard against degenerate stepSize
-      const step = Math.max(1, stepSize);
+      const step = Math.max(1, stepSize * scale);
+      const minDot = minDotSize * scale;
+      const maxDot = maxDotSize * scale;
 
       const angleRad = p.radians(gridAngle);
       const cosA = Math.cos(angleRad);
@@ -211,9 +339,6 @@ export function createSketch(container: HTMLElement): SketchHandle {
       pg.fill(0);
       pg.noStroke();
 
-      // Reset dot collection for SVG export
-      dots = [];
-
       let rowIndex = 0;
       for (let gy = -overscan; gy < ch + overscan; gy += step) {
         for (let gx = -overscan; gx < cw + overscan; gx += step) {
@@ -225,19 +350,8 @@ export function createSketch(container: HTMLElement): SketchHandle {
           // Rotate grid coordinate around canvas center
           const dx = gxOff - cx;
           const dy = gy - cy;
-          let rx = cx + dx * cosA - dy * sinA;
-          let ry = cy + dx * sinA + dy * cosA;
-
-          // Perlin noise displacement
-          if (noiseAmount > 0) {
-            const nx = (p.noise(gxOff * 0.05, gy * 0.05) - 0.5) * 2 * noiseAmount;
-            const ny =
-              (p.noise(gxOff * 0.05 + 1000, gy * 0.05 + 1000) - 0.5) *
-              2 *
-              noiseAmount;
-            rx += nx;
-            ry += ny;
-          }
+          const rx = cx + dx * cosA - dy * sinA;
+          const ry = cy + dx * sinA + dy * cosA;
 
           // Sample luminance from src buffer
           const sx = Math.floor(rx);
@@ -252,17 +366,8 @@ export function createSketch(container: HTMLElement): SketchHandle {
 
           if (lum < halftoneThreshold) {
             // Darker pixels → bigger dots
-            const dotSize = p.map(lum, 0, halftoneThreshold, maxDotSize, minDotSize);
-            const radius = (dotSize * cornerRadiusPct) / 100;
-
-            pg.push();
-            pg.translate(rx, ry);
-            pg.rotate(angleRad);
-            pg.rect(-dotSize / 2, -dotSize / 2, dotSize, dotSize, radius);
-            pg.pop();
-
-            // Record for SVG export (final world-space position, already transformed)
-            dots.push({ x: rx, y: ry, size: dotSize, r: radius });
+            const dotSize = p.map(lum, 0, halftoneThreshold, maxDot, minDot);
+            pg.circle(rx, ry, dotSize);
           }
         }
         rowIndex++;
@@ -281,11 +386,23 @@ export function createSketch(container: HTMLElement): SketchHandle {
   // ------------------------------------------------------------------ API
 
   function setParams(params: HalftoneParams): void {
-    const prevSize = currentParams.canvasSize;
+    const prev = currentParams;
     currentParams = { ...params };
 
-    if (params.canvasSize !== prevSize) {
+    const resolutionChanged =
+      params.canvasSize !== prev.canvasSize ||
+      params.preview !== prev.preview ||
+      params.canvasFormat !== prev.canvasFormat;
+    const srcChanged =
+      params.preBlur !== prev.preBlur ||
+      params.noiseAmount !== prev.noiseAmount ||
+      params.imageOffsetX !== prev.imageOffsetX ||
+      params.imageOffsetY !== prev.imageOffsetY;
+
+    if (resolutionChanged) {
       applyCanvasSize(p5Instance);
+      rebuildSrc();
+    } else if (srcChanged) {
       rebuildSrc();
     }
 
@@ -308,6 +425,31 @@ export function createSketch(container: HTMLElement): SketchHandle {
   }
 
   async function exportImage(format: ExportFormat): Promise<void> {
+    // Exports always run at full resolution: temporarily leave preview mode,
+    // re-render, export, then restore the preview-resolution canvas.
+    const needFullRes = renderScale() < 1;
+    if (needFullRes) {
+      exportFullRes = true;
+      applyCanvasSize(p5Instance);
+      rebuildSrc();
+      p5Instance.redraw();
+      // p5 2.x does not guarantee the redraw has flushed to the graphics
+      // buffers before the next line, so wait one frame before reading pixels.
+      await new Promise<void>(r => requestAnimationFrame(() => r()));
+    }
+    try {
+      await doExport(format);
+    } finally {
+      if (needFullRes) {
+        exportFullRes = false;
+        applyCanvasSize(p5Instance);
+        rebuildSrc();
+        p5Instance.redraw();
+      }
+    }
+  }
+
+  async function doExport(format: ExportFormat): Promise<void> {
     const { transparentBg, bgColor } = currentParams;
 
     if (format === 'png') {
@@ -342,96 +484,34 @@ export function createSketch(container: HTMLElement): SketchHandle {
       }
 
     } else if (format === 'svg') {
-      // Trace the post-processed bitmap (including ink-bleed metaball merging)
-      // with potrace to produce a clean vector path.
+      // Vectorize the post-processed bitmap (including ink-bleed metaball
+      // merging) by tracing the boundary between ink and background pixels.
       const { dotColor, bgColor: bg } = currentParams;
 
-      // ── 1. Build a binary black-on-white mask canvas from the pg buffer ──
-      const maskCanvas = document.createElement('canvas');
-      maskCanvas.width = cw;
-      maskCanvas.height = ch;
-      const maskCtx = maskCanvas.getContext('2d')!;
-
-      // White background (potrace: white = background, black = ink)
-      maskCtx.fillStyle = '#ffffff';
-      maskCtx.fillRect(0, 0, cw, ch);
-
-      // Read post-processed pixels from pg
+      // Build a binary ink mask (1 = ink) from the post-processed pg buffer.
       const pgCtx = (pg as any).drawingContext as CanvasRenderingContext2D;
-      const srcData = pgCtx.getImageData(0, 0, cw, ch);
-      const maskData = maskCtx.createImageData(cw, ch);
-      const s = srcData.data;
-      const m = maskData.data;
-
-      for (let i = 0; i < s.length; i += 4) {
+      const data = pgCtx.getImageData(0, 0, cw, ch).data;
+      const mask = new Uint8Array(cw * ch);
+      for (let i = 0, p = 0; i < data.length; i += 4, p++) {
         let isInk: boolean;
         if (transparentBg) {
-          // Ink wherever alpha > 128 (bg is transparent)
-          isInk = s[i + 3] > 128;
+          isInk = data[i + 3] > 128;
         } else {
-          // Ink wherever luminance < 128
-          const lum = 0.299 * s[i] + 0.587 * s[i + 1] + 0.114 * s[i + 2];
+          const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
           isInk = lum < 128;
         }
-        const v = isInk ? 0 : 255;
-        m[i]     = v;
-        m[i + 1] = v;
-        m[i + 2] = v;
-        m[i + 3] = 255;
-      }
-      maskCtx.putImageData(maskData, 0, 0);
-
-      // ── 2. Trace with potrace ──
-      let svgOut: string;
-      try {
-        svgOut = await potrace(maskCanvas, {
-          turdsize: 2,
-          alphamax: 1,
-          opttolerance: 0.2,
-        });
-      } catch (err) {
-        console.error('[halftoneSketch] potrace failed, falling back to per-dot SVG:', err);
-        // Fallback: per-dot rect SVG (original behaviour, no ink bleed)
-        const { gridAngle } = currentParams;
-        const fmt = (n: number) => n.toFixed(2);
-        const rects = dots
-          .map(({ x, y, size, r }) => {
-            const hx = fmt(x - size / 2);
-            const hy = fmt(y - size / 2);
-            const sz = fmt(size);
-            const rx = fmt(r);
-            const cx2 = fmt(x);
-            const cy2 = fmt(y);
-            return `<rect x="${hx}" y="${hy}" width="${sz}" height="${sz}" rx="${rx}" transform="rotate(${gridAngle} ${cx2} ${cy2})"/>`;
-          })
-          .join('\n    ');
-        const bgRect2 = transparentBg
-          ? ''
-          : `\n  <rect width="100%" height="100%" fill="${bg}"/>`;
-        svgOut = `<svg xmlns="http://www.w3.org/2000/svg" width="${cw}" height="${ch}" viewBox="0 0 ${cw} ${ch}">${bgRect2}
-  <g fill="${dotColor}">
-    ${rects}
-  </g>
-</svg>`;
-        downloadSvg(svgOut);
-        return;
+        mask[p] = isInk ? 1 : 0;
       }
 
-      // ── 3. Extract path d= attributes from potrace output ──
-      const pathRe = /d="([^"]+)"/g;
-      const dValues: string[] = [];
-      let match: RegExpExecArray | null;
-      while ((match = pathRe.exec(svgOut)) !== null) {
-        dValues.push(match[1]);
-      }
+      const d = traceContours(mask, cw, ch);
 
-      // ── 4. Build our own SVG with correct viewBox and colors ──
       const bgRect = transparentBg
         ? ''
         : `\n  <rect width="100%" height="100%" fill="${bg}"/>`;
-
-      const pathEl = dValues.length > 0
-        ? `\n  <path d="${dValues.join(' ')}" fill="${dotColor}"/>`
+      // Outer boundaries wind clockwise, holes counter-clockwise → the default
+      // nonzero fill rule punches holes out automatically.
+      const pathEl = d
+        ? `\n  <path d="${d}" fill="${dotColor}"/>`
         : '';
 
       const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${cw}" height="${ch}" viewBox="0 0 ${cw} ${ch}">${bgRect}${pathEl}
