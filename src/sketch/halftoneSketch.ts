@@ -11,8 +11,9 @@ type Pt = { x: number; y: number };
  * Marching-squares contour extraction on a continuous W×H ink-intensity field.
  * Edge crossings are linearly interpolated (sub-pixel), so anti-aliased dot
  * rims and ink-bleed gradients become smooth boundaries instead of the raster
- * staircase. The resulting segments are stitched into closed loops, smoothed
- * with Chaikin corner-cutting, and emitted as SVG path data (fill-rule evenodd
+ * staircase. The resulting segments are stitched into closed loops, simplified
+ * with Ramer–Douglas–Peucker, and emitted as Catmull-Rom cubic Bézier path
+ * data — smooth curves with few anchors (fill-rule evenodd
  * carves the holes, so loop winding does not matter).
  */
 function traceContours(field: Float32Array, W: number, H: number): string {
@@ -65,19 +66,56 @@ function traceContours(field: Float32Array, W: number, H: number): string {
   });
   const used = new Uint8Array(segs.length);
 
-  const chaikin = (loop: Pt[]): Pt[] => {
-    let pts = loop;
-    for (let iter = 0; iter < 2; iter++) {
-      const n = pts.length;
-      const next: Pt[] = [];
-      for (let i = 0; i < n; i++) {
-        const p = pts[i], q = pts[(i + 1) % n];
-        next.push({ x: p.x * 0.75 + q.x * 0.25, y: p.y * 0.75 + q.y * 0.25 });
-        next.push({ x: p.x * 0.25 + q.x * 0.75, y: p.y * 0.25 + q.y * 0.75 });
+  // Ramer–Douglas–Peucker: drop near-collinear staircase points so the curve
+  // is described by few anchors instead of one per marching-squares crossing.
+  const EPS = 1.0; // simplification tolerance in buffer pixels
+  const rdp = (pts: Pt[], eps: number): Pt[] => {
+    if (pts.length < 3) return pts;
+    const sqEps = eps * eps;
+    const keep = new Uint8Array(pts.length);
+    keep[0] = keep[pts.length - 1] = 1;
+    const stack: [number, number][] = [[0, pts.length - 1]];
+    while (stack.length) {
+      const [a, b] = stack.pop()!;
+      const ax = pts[a].x, ay = pts[a].y;
+      const dx = pts[b].x - ax, dy = pts[b].y - ay;
+      const len2 = dx * dx + dy * dy || 1e-9;
+      let maxD = -1, idx = -1;
+      for (let i = a + 1; i < b; i++) {
+        const t = ((pts[i].x - ax) * dx + (pts[i].y - ay) * dy) / len2;
+        const px = ax + t * dx, py = ay + t * dy;
+        const ddx = pts[i].x - px, ddy = pts[i].y - py;
+        const sq = ddx * ddx + ddy * ddy;
+        if (sq > maxD) { maxD = sq; idx = i; }
       }
-      pts = next;
+      if (maxD > sqEps && idx > a) {
+        keep[idx] = 1;
+        stack.push([a, idx], [idx, b]);
+      }
     }
-    return pts;
+    const out: Pt[] = [];
+    for (let i = 0; i < pts.length; i++) if (keep[i]) out.push(pts[i]);
+    return out;
+  };
+
+  // Closed Catmull-Rom spline → one cubic Bézier per anchor. Smooth
+  // interpolation through every anchor with no extra emitted points.
+  const f = (n: number) => Math.round(n * 100) / 100;
+  const splinePath = (pts: Pt[]): string => {
+    const n = pts.length;
+    let s = `M${f(pts[0].x)} ${f(pts[0].y)}`;
+    if (n < 3) {
+      for (let i = 1; i < n; i++) s += `L${f(pts[i].x)} ${f(pts[i].y)}`;
+      return s + 'Z';
+    }
+    for (let i = 0; i < n; i++) {
+      const p0 = pts[(i - 1 + n) % n], p1 = pts[i];
+      const p2 = pts[(i + 1) % n], p3 = pts[(i + 2) % n];
+      const c1x = p1.x + (p2.x - p0.x) / 6, c1y = p1.y + (p2.y - p0.y) / 6;
+      const c2x = p2.x - (p3.x - p1.x) / 6, c2y = p2.y - (p3.y - p1.y) / 6;
+      s += `C${f(c1x)} ${f(c1y)} ${f(c2x)} ${f(c2y)} ${f(p2.x)} ${f(p2.y)}`;
+    }
+    return s + 'Z';
   };
 
   let d = '';
@@ -101,11 +139,9 @@ function traceContours(field: Float32Array, W: number, H: number): string {
       cur = nxt;
     }
     if (loop.length < 3) continue;
-    const sm = chaikin(loop);
-    const f = (n: number) => Math.round(n * 100) / 100;
-    let segStr = `M${f(sm[0].x)} ${f(sm[0].y)}`;
-    for (let i = 1; i < sm.length; i++) segStr += `L${f(sm[i].x)} ${f(sm[i].y)}`;
-    d += segStr + 'Z';
+    const sm = rdp(loop, EPS);
+    if (sm.length < 3) continue;
+    d += splinePath(sm);
   }
   return d;
 }
