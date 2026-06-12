@@ -54,6 +54,7 @@ body {
   justify-content: center;
   overflow: auto;
   background: var(--bg);
+  position: relative;
 }
 
 /* ── Sidebar inner ───────────────────────────────────────────── */
@@ -412,4 +413,38 @@ body {
 .crop-done-btn {
   align-self: stretch;
   margin-top: 4px;
+}
+
+/* ── Drag-and-drop metaball overlay (follows cursor) ─────────── */
+
+.drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(246, 246, 249, 0.80);
+  backdrop-filter: blur(2px);
+  pointer-events: none; /* let drop events reach .app-layout handler */
+  animation: overlay-in 0.18s ease-out;
+}
+
+@keyframes overlay-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* Cursor-following box; transform is set imperatively per dragover. */
+.drop-effect {
+  position: fixed;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+}
+
+/* On drop: veil + blob fade out together. */
+.drop-overlay--absorb {
+  animation: overlay-out 0.48s ease-in forwards;
+}
+
+@keyframes overlay-out {
+  to { opacity: 0; }
 }
