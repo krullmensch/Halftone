@@ -98,8 +98,8 @@ export default function ControlSidebar({ params, onChange, onImageLoad, onExport
       <SliderControl
         label="Step Size"
         value={params.stepSize}
-        min={3}
-        max={20}
+        min={15}
+        max={30}
         step={1}
         onChange={v => set('stepSize', v)}
         unit="px"

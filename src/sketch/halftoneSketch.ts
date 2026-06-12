@@ -5,69 +5,107 @@ import { DEFAULT_PARAMS } from '../types';
 /** Longest canvas side while preview mode is active. */
 const PREVIEW_MAX = 1000;
 
-/**
- * Trace the boundary between ink (1) and background (0) pixels of a W×H mask
- * into SVG path data. Each ink/background pixel edge becomes a unit grid edge,
- * directed so ink stays on the left; the edges stitch into closed loops where
- * outer contours wind clockwise and holes counter-clockwise (nonzero fill rule
- * then carves holes out). Axis-aligned, so it reproduces the raster exactly —
- * including ink-bleed-merged blobs.
- */
-function traceContours(mask: Uint8Array, W: number, H: number): string {
-  const stride = W + 1;
-  // Outgoing directed edges per grid vertex (vertex key = y*stride + x).
-  const out = new Map<number, number[]>();
-  const addEdge = (sx: number, sy: number, ex: number, ey: number) => {
-    const sk = sy * stride + sx;
-    const ek = ey * stride + ex;
-    const arr = out.get(sk);
-    if (arr) arr.push(ek);
-    else out.set(sk, [ek]);
-  };
-  const ink = (x: number, y: number) =>
-    x >= 0 && y >= 0 && x < W && y < H && mask[y * W + x] === 1;
+type Pt = { x: number; y: number };
 
-  for (let y = 0; y < H; y++) {
-    for (let x = 0; x < W; x++) {
-      if (mask[y * W + x] !== 1) continue;
-      if (!ink(x, y - 1)) addEdge(x, y, x + 1, y);             // top → right
-      if (!ink(x, y + 1)) addEdge(x + 1, y + 1, x, y + 1);     // bottom → left
-      if (!ink(x - 1, y)) addEdge(x, y + 1, x, y);             // left → up
-      if (!ink(x + 1, y)) addEdge(x + 1, y, x + 1, y + 1);     // right → down
+/**
+ * Marching-squares contour extraction on a continuous W×H ink-intensity field.
+ * Edge crossings are linearly interpolated (sub-pixel), so anti-aliased dot
+ * rims and ink-bleed gradients become smooth boundaries instead of the raster
+ * staircase. The resulting segments are stitched into closed loops, smoothed
+ * with Chaikin corner-cutting, and emitted as SVG path data (fill-rule evenodd
+ * carves the holes, so loop winding does not matter).
+ */
+function traceContours(field: Float32Array, W: number, H: number): string {
+  const T = 128;
+  const interp = (va: number, vb: number) => {
+    const d = vb - va;
+    return Math.abs(d) < 1e-6 ? 0.5 : (T - va) / d;
+  };
+  const at = (x: number, y: number) => field[y * W + x];
+
+  // Collect undirected segments from each 2×2 cell.
+  const segs: [Pt, Pt][] = [];
+  for (let y = 0; y < H - 1; y++) {
+    for (let x = 0; x < W - 1; x++) {
+      const tl = at(x, y), tr = at(x + 1, y);
+      const br = at(x + 1, y + 1), bl = at(x, y + 1);
+      let c = 0;
+      if (tl >= T) c |= 8;
+      if (tr >= T) c |= 4;
+      if (br >= T) c |= 2;
+      if (bl >= T) c |= 1;
+      if (c === 0 || c === 15) continue;
+      // Edge crossing points (top, right, bottom, left of the cell).
+      const top: Pt = { x: x + interp(tl, tr), y };
+      const right: Pt = { x: x + 1, y: y + interp(tr, br) };
+      const bottom: Pt = { x: x + interp(bl, br), y: y + 1 };
+      const left: Pt = { x, y: y + interp(tl, bl) };
+      const push = (a: Pt, b: Pt) => segs.push([a, b]);
+      switch (c) {
+        case 1: case 14: push(left, bottom); break;
+        case 2: case 13: push(bottom, right); break;
+        case 3: case 12: push(left, right); break;
+        case 4: case 11: push(top, right); break;
+        case 5: push(left, top); push(bottom, right); break;
+        case 6: case 9: push(top, bottom); break;
+        case 7: case 8: push(left, top); break;
+        case 10: push(top, right); push(left, bottom); break;
+      }
     }
   }
 
-  let d = '';
-  for (const [startKey, arr] of out) {
-    while (arr.length > 0) {
-      let curKey = startKey;
-      const sx = startKey % stride;
-      const sy = (startKey - sx) / stride;
-      let segs = `M${sx} ${sy}`;
-      let prevDx = 0, prevDy = 0;
-      let lastX = sx, lastY = sy;
-      let count = 0;
-      while (true) {
-        const outs = out.get(curKey);
-        if (!outs || outs.length === 0) break;
-        const nextKey = outs.pop()!;
-        const nx = nextKey % stride;
-        const ny = (nextKey - nx) / stride;
-        const dx = Math.sign(nx - lastX);
-        const dy = Math.sign(ny - lastY);
-        if (count > 0 && dx === prevDx && dy === prevDy) {
-          // Collinear: extend the previous segment instead of adding a vertex.
-          segs = segs.slice(0, segs.lastIndexOf('L'));
-        }
-        segs += `L${nx} ${ny}`;
-        prevDx = dx; prevDy = dy;
-        lastX = nx; lastY = ny;
-        curKey = nextKey;
-        count++;
-        if (curKey === startKey) break;
+  // Stitch segments into loops by consuming edges between quantized endpoints.
+  const key = (p: Pt) => `${Math.round(p.x * 16)},${Math.round(p.y * 16)}`;
+  const ends = new Map<string, { si: number; other: Pt }[]>();
+  const addEnd = (k: string, si: number, other: Pt) =>
+    (ends.get(k) ?? ends.set(k, []).get(k)!).push({ si, other });
+  segs.forEach(([a, b], i) => {
+    addEnd(key(a), i, b);
+    addEnd(key(b), i, a);
+  });
+  const used = new Uint8Array(segs.length);
+
+  const chaikin = (loop: Pt[]): Pt[] => {
+    let pts = loop;
+    for (let iter = 0; iter < 2; iter++) {
+      const n = pts.length;
+      const next: Pt[] = [];
+      for (let i = 0; i < n; i++) {
+        const p = pts[i], q = pts[(i + 1) % n];
+        next.push({ x: p.x * 0.75 + q.x * 0.25, y: p.y * 0.75 + q.y * 0.25 });
+        next.push({ x: p.x * 0.25 + q.x * 0.75, y: p.y * 0.25 + q.y * 0.75 });
       }
-      if (count >= 2) d += segs + 'Z';
+      pts = next;
     }
+    return pts;
+  };
+
+  let d = '';
+  for (let s = 0; s < segs.length; s++) {
+    if (used[s]) continue;
+    used[s] = 1;
+    const startK = key(segs[s][0]);
+    const loop: Pt[] = [segs[s][0]];
+    let cur = segs[s][1];
+    let guard = 0;
+    while (key(cur) !== startK && guard++ < segs.length + 4) {
+      loop.push(cur);
+      const cand = ends.get(key(cur));
+      let nxt: Pt | null = null;
+      if (cand) {
+        for (const e of cand) {
+          if (!used[e.si]) { used[e.si] = 1; nxt = e.other; break; }
+        }
+      }
+      if (!nxt) break;
+      cur = nxt;
+    }
+    if (loop.length < 3) continue;
+    const sm = chaikin(loop);
+    const f = (n: number) => Math.round(n * 100) / 100;
+    let segStr = `M${f(sm[0].x)} ${f(sm[0].y)}`;
+    for (let i = 1; i < sm.length; i++) segStr += `L${f(sm[i].x)} ${f(sm[i].y)}`;
+    d += segStr + 'Z';
   }
   return d;
 }
@@ -488,30 +526,28 @@ export function createSketch(container: HTMLElement): SketchHandle {
       // merging) by tracing the boundary between ink and background pixels.
       const { dotColor, bgColor: bg } = currentParams;
 
-      // Build a binary ink mask (1 = ink) from the post-processed pg buffer.
+      // Build a continuous ink-intensity field (0–255) from the post-processed
+      // pg buffer; marching squares interpolates its sub-pixel boundary.
       const pgCtx = (pg as any).drawingContext as CanvasRenderingContext2D;
       const data = pgCtx.getImageData(0, 0, cw, ch).data;
-      const mask = new Uint8Array(cw * ch);
+      const field = new Float32Array(cw * ch);
       for (let i = 0, p = 0; i < data.length; i += 4, p++) {
-        let isInk: boolean;
         if (transparentBg) {
-          isInk = data[i + 3] > 128;
+          field[p] = data[i + 3];
         } else {
           const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-          isInk = lum < 128;
+          field[p] = 255 - lum;
         }
-        mask[p] = isInk ? 1 : 0;
       }
 
-      const d = traceContours(mask, cw, ch);
+      const d = traceContours(field, cw, ch);
 
       const bgRect = transparentBg
         ? ''
         : `\n  <rect width="100%" height="100%" fill="${bg}"/>`;
-      // Outer boundaries wind clockwise, holes counter-clockwise → the default
-      // nonzero fill rule punches holes out automatically.
+      // evenodd fill-rule carves holes regardless of loop winding.
       const pathEl = d
-        ? `\n  <path d="${d}" fill="${dotColor}"/>`
+        ? `\n  <path d="${d}" fill="${dotColor}" fill-rule="evenodd"/>`
         : '';
 
       const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${cw}" height="${ch}" viewBox="0 0 ${cw} ${ch}">${bgRect}${pathEl}
