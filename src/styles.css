@@ -448,3 +448,53 @@ body {
 @keyframes overlay-out {
   to { opacity: 0; }
 }
+
+/* ── Responsive: mobile layout ───────────────────────────────── */
+
+@media (max-width: 768px) {
+  .app-layout {
+    flex-direction: column-reverse; /* DOM: sidebar then main -> reversed = canvas on top */
+  }
+
+  .canvas-area {
+    flex: 0 0 60vh;
+    height: 60vh;
+  }
+
+  .canvas-wrapper {
+    padding: 12px;
+  }
+
+  .sketch-container {
+    max-height: calc(60vh - 24px);
+  }
+  .sketch-container canvas {
+    max-height: calc(60vh - 24px) !important;
+  }
+
+  .sidebar {
+    width: 100%;
+    min-width: 0;
+    border-right: none;
+    border-top: 1px solid var(--border);
+  }
+
+  /* bigger touch targets */
+  .slider {
+    height: 6px;
+  }
+  .slider::-webkit-slider-thumb {
+    width: 20px;
+    height: 20px;
+  }
+  .slider::-moz-range-thumb {
+    width: 20px;
+    height: 20px;
+  }
+  .toggle-btn {
+    padding: 8px 0;
+  }
+  .export-btn {
+    padding: 12px 0;
+  }
+}
