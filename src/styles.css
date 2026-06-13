@@ -5,14 +5,14 @@
 }
 
 :root {
-  --bg: #111113;
-  --sidebar-bg: #1a1a1e;
-  --surface: #222226;
-  --border: #333338;
-  --text: #e8e8ea;
-  --text-muted: #888890;
-  --accent: #6c8bef;
-  --accent-hover: #849cf5;
+  --bg: #000000;
+  --sidebar-bg: #000000;
+  --surface: #000000;
+  --border: #ffffff;
+  --text: #ffffff;
+  --text-muted: #ffffff;
+  --accent: #ffffff;
+  --accent-hover: #ffffff;
   --sidebar-width: 300px;
 }
 
@@ -104,6 +104,36 @@ body {
   color: var(--text);
 }
 
+.control-value--editable {
+  cursor: text;
+  padding: 1px 4px;
+  margin: -1px -4px;
+  border-radius: 3px;
+  transition: background 0.15s;
+}
+
+.control-value--editable:hover {
+  background: var(--surface);
+}
+
+.control-value-input {
+  width: 56px;
+  font-size: 12px;
+  font-family: inherit;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 4px;
+  outline: none;
+}
+
+.control-value-input:focus {
+  border-color: var(--accent);
+}
+
 /* ── Slider ──────────────────────────────────────────────────── */
 
 .slider {
@@ -111,7 +141,8 @@ body {
   appearance: none;
   width: 100%;
   height: 4px;
-  background: var(--surface);
+  background: #000;
+  border: 1px solid var(--border);
   border-radius: 2px;
   outline: none;
   cursor: pointer;
@@ -124,6 +155,7 @@ body {
   height: 14px;
   border-radius: 50%;
   background: var(--accent);
+  border: 2px solid var(--bg);
   cursor: pointer;
   transition: background 0.15s;
 }
@@ -138,7 +170,7 @@ body {
   border-radius: 50%;
   background: var(--accent);
   cursor: pointer;
-  border: none;
+  border: 2px solid var(--bg);
 }
 
 /* ── File input ──────────────────────────────────────────────── */
@@ -156,7 +188,7 @@ body {
 
 .file-input::file-selector-button {
   background: var(--accent);
-  color: #fff;
+  color: var(--bg);
   border: none;
   border-radius: 3px;
   padding: 3px 8px;
@@ -202,13 +234,13 @@ body {
 
 .toggle-btn:hover {
   background: var(--border);
-  color: var(--text);
+  color: var(--bg);
 }
 
 .toggle-btn.active {
   background: var(--accent);
   border-color: var(--accent);
-  color: #fff;
+  color: var(--bg);
 }
 
 /* ── Colors section ──────────────────────────────────────────── */
@@ -253,6 +285,87 @@ body {
   cursor: not-allowed;
 }
 
+/* ── Custom color picker ─────────────────────────────────────── */
+
+.color-field {
+  position: relative;
+}
+
+.color-swatch {
+  width: 36px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.color-swatch:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.color-popover {
+  position: absolute;
+  right: 0;
+  bottom: 30px;
+  z-index: 20;
+  background: #000;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.color-wheel-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.color-wheel {
+  position: relative;
+  width: 180px;
+  height: 180px;
+  border-radius: 50%;
+  cursor: crosshair;
+  touch-action: none;
+  background:
+    radial-gradient(circle, #fff 0%, transparent 70%),
+    conic-gradient(from 0deg, red, yellow, lime, cyan, blue, magenta, red);
+}
+
+.color-wheel::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: #000;
+  opacity: var(--v, 0);
+  pointer-events: none;
+}
+
+.color-wheel__marker {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px #000;
+  transform: translate(-50%, -50%);
+  z-index: 2;
+  pointer-events: none;
+}
+
+.color-hex {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  color: var(--text);
+}
+
 .checkbox-row {
   display: flex;
   align-items: center;
@@ -290,7 +403,7 @@ body {
 
 .position-btn:hover {
   background: var(--accent);
-  color: #fff;
+  color: var(--bg);
 }
 
 /* ── Export button row ───────────────────────────────────────── */
@@ -307,7 +420,7 @@ body {
   background: var(--accent);
   border: none;
   border-radius: 6px;
-  color: #fff;
+  color: var(--bg);
   font-size: 13px;
   font-weight: 600;
   font-family: inherit;
@@ -326,6 +439,95 @@ body {
   align-items: center;
   justify-content: center;
   padding: 24px;
+  position: relative;
+}
+
+/* ── Upload card ─────────────────────────────────────────────── */
+
+.canvas-upload {
+  position: absolute;
+  inset: 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--border);
+  border-radius: 8px;
+  background: #000;
+  color: var(--text);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: inherit;
+  box-sizing: border-box;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.canvas-upload:hover,
+.canvas-upload:focus-visible {
+  border-color: var(--accent);
+  background: #000;
+  outline: none;
+}
+
+.canvas-upload__icon {
+  color: var(--accent);
+  margin-bottom: 12px;
+  opacity: 0.9;
+}
+
+.canvas-upload__title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+
+.canvas-upload__hint {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.canvas-upload__input {
+  display: none;
+}
+
+/* ── Remove-image button ─────────────────────────────────────── */
+
+.canvas-remove-btn {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 5;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.72);
+  color: var(--text);
+  border: 1px solid var(--border);
+  font-size: 20px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  font-family: inherit;
+}
+
+.canvas-remove-btn:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg);
+}
+
+/* ── Settings collapse toggle (desktop: hidden) ──────────────── */
+
+.settings-toggle {
+  display: none;
+}
+
+.settings-toggle__icon {
+  transition: transform 0.3s ease;
 }
 
 .sketch-container {
@@ -335,12 +537,12 @@ body {
   max-width: 100%;
   max-height: calc(100vh - 48px);
   /* Checkerboard pattern so transparency is visible on screen */
-  background-color: #888;
+  background-color: #fff;
   background-image:
-    linear-gradient(45deg, #ccc 25%, transparent 25%),
-    linear-gradient(-45deg, #ccc 25%, transparent 25%),
-    linear-gradient(45deg, transparent 75%, #ccc 75%),
-    linear-gradient(-45deg, transparent 75%, #ccc 75%);
+    linear-gradient(45deg, #000 25%, transparent 25%),
+    linear-gradient(-45deg, #000 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #000 75%),
+    linear-gradient(-45deg, transparent 75%, #000 75%);
   background-size: 16px 16px;
   background-position: 0 0, 0 8px, 8px -8px, -8px 0px;
 }
@@ -421,7 +623,7 @@ body {
   position: fixed;
   inset: 0;
   z-index: 50;
-  background: rgba(246, 246, 249, 0.80);
+  background: rgba(255, 255, 255, 0.85);
   backdrop-filter: blur(2px);
   pointer-events: none; /* let drop events reach .app-layout handler */
   animation: overlay-in 0.18s ease-out;
@@ -457,19 +659,23 @@ body {
   }
 
   .canvas-area {
-    flex: 0 0 60vh;
-    height: 60vh;
+    flex: 0 0 50vh;
+    height: 50vh;
   }
 
   .canvas-wrapper {
     padding: 12px;
   }
 
+  .canvas-upload {
+    inset: 12px;
+  }
+
   .sketch-container {
-    max-height: calc(60vh - 24px);
+    max-height: calc(50vh - 24px);
   }
   .sketch-container canvas {
-    max-height: calc(60vh - 24px) !important;
+    max-height: calc(50vh - 24px) !important;
   }
 
   .sidebar {
@@ -477,6 +683,55 @@ body {
     min-width: 0;
     border-right: none;
     border-top: 1px solid var(--border);
+    transition: flex-basis 0.3s ease, transform 0.3s ease;
+    overflow-y: auto;
+  }
+
+  /* Settings collapse toggle — shown as full-width handle at sidebar top */
+  .settings-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    padding: 8px;
+    background: var(--sidebar-bg);
+    border: none;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    color: var(--text);
+  }
+
+  /* Sidebar inner collapses while toggle stays visible */
+  .sidebar-inner {
+    transition: max-height 0.3s ease, opacity 0.3s ease;
+    overflow: hidden;
+    max-height: 1000px;
+    opacity: 1;
+  }
+
+  /* Collapsed state */
+  .app-layout--collapsed .sidebar-inner {
+    max-height: 0;
+    opacity: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+
+  .app-layout--collapsed .canvas-area {
+    flex: 1 1 auto;
+    height: auto;
+  }
+
+  .app-layout--collapsed .sketch-container {
+    max-height: calc(100vh - 80px);
+  }
+
+  .app-layout--collapsed .sketch-container canvas {
+    max-height: calc(100vh - 80px) !important;
+  }
+
+  .app-layout--collapsed .settings-toggle__icon {
+    transform: rotate(180deg);
   }
 
   /* bigger touch targets */
@@ -496,5 +751,16 @@ body {
   }
   .export-btn {
     padding: 12px 0;
+  }
+
+  .canvas-remove-btn {
+    width: 40px;
+    height: 40px;
+    top: 16px;
+    right: 16px;
+  }
+
+  .canvas-upload__title {
+    font-size: 18px;
   }
 }

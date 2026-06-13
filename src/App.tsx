@@ -20,6 +20,7 @@ export default function App() {
   const [cropOpen, setCropOpen] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [absorbing, setAbsorbing] = useState(false);
+  const [settingsCollapsed, setSettingsCollapsed] = useState(false);
   const exportRef = useRef<((format: ExportFormat) => void) | null>(null);
   const objectUrlRef = useRef<string | null>(null);
   const dragDepth = useRef(0);
@@ -36,22 +37,33 @@ export default function App() {
   const isFileDrag = (e: React.DragEvent) =>
     Array.from(e.dataTransfer.types).includes('Files');
 
+  const loadFile = useCallback((file: File) => {
+    if (!file.type.startsWith('image/')) return;
+    if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
+    const url = URL.createObjectURL(file);
+    objectUrlRef.current = url;
+    setImageUrl(url);
+  }, []);
+
+  const handleRemoveImage = useCallback(() => {
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current);
+      objectUrlRef.current = null;
+    }
+    setImageUrl(null);
+  }, []);
+
   const handleDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
     dragDepth.current = 0;
     setDragging(false);
     const file = e.dataTransfer.files?.[0];
-    if (!file || !file.type.startsWith('image/')) return;
-    if (objectUrlRef.current) {
-      URL.revokeObjectURL(objectUrlRef.current);
-    }
-    const url = URL.createObjectURL(file);
-    objectUrlRef.current = url;
-    setImageUrl(url);
+    if (!file) return;
+    loadFile(file);
     setAbsorbing(true);
     window.setTimeout(() => setAbsorbing(false), 480);
-  }, []);
+  }, [loadFile]);
 
   const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -77,17 +89,37 @@ export default function App() {
 
   return (
     <div
-      className="app-layout"
+      className={`app-layout${settingsCollapsed ? ' app-layout--collapsed' : ''}`}
       onDrop={handleDrop}
       onDragOver={handleDragOver}
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
     >
       <aside className="sidebar">
+        <button
+          type="button"
+          className="settings-toggle"
+          onClick={() => setSettingsCollapsed(c => !c)}
+          aria-label={settingsCollapsed ? 'Einstellungen einblenden' : 'Einstellungen ausblenden'}
+        >
+          <svg
+            className="settings-toggle__icon"
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M6 9l6 6 6-6" />
+          </svg>
+        </button>
         <ControlSidebar
           params={params}
           onChange={setParams}
-          onImageLoad={setImageUrl}
           onExport={handleExport}
           onOpenCrop={() => setCropOpen(true)}
           hasImage={!!imageUrl}
@@ -98,6 +130,8 @@ export default function App() {
           params={params}
           imageUrl={imageUrl}
           registerExport={registerExport}
+          loadFile={loadFile}
+          onRemove={handleRemoveImage}
         />
       </main>
       {(dragging || absorbing) && (

@@ -1,46 +1,23 @@
-import { useRef } from 'react';
+import { useState } from 'react';
 import { HalftoneParams, GridType, CanvasFormat, ExportFormat } from '../types';
+import ColorField from './ColorField';
 
 interface Props {
   params: HalftoneParams;
   onChange: (params: HalftoneParams) => void;
-  onImageLoad: (url: string) => void;
   onExport: (format: ExportFormat) => void;
   onOpenCrop: () => void;
   hasImage: boolean;
 }
 
-export default function ControlSidebar({ params, onChange, onImageLoad, onExport, onOpenCrop, hasImage }: Props) {
-  const objectUrlRef = useRef<string | null>(null);
-
+export default function ControlSidebar({ params, onChange, onExport, onOpenCrop, hasImage }: Props) {
   function set<K extends keyof HalftoneParams>(key: K, value: HalftoneParams[K]) {
     onChange({ ...params, [key]: value });
-  }
-
-  function handleImageChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (objectUrlRef.current) {
-      URL.revokeObjectURL(objectUrlRef.current);
-    }
-    const url = URL.createObjectURL(file);
-    objectUrlRef.current = url;
-    onImageLoad(url);
   }
 
   return (
     <div className="sidebar-inner">
       <h2 className="sidebar-title">Halftone Ink Bleed</h2>
-
-      <div className="control-group">
-        <label className="control-label">Source Image</label>
-        <input
-          type="file"
-          accept="image/jpeg,image/png"
-          onChange={handleImageChange}
-          className="file-input"
-        />
-      </div>
 
       <SliderControl
         label="Canvas Size"
@@ -193,27 +170,17 @@ export default function ControlSidebar({ params, onChange, onImageLoad, onExport
       <div className="control-section-label">Colors</div>
 
       <div className="control-group">
-        <div className="color-row">
-          <label className="control-label color-label">Dot Color</label>
-          <input
-            type="color"
-            value={params.dotColor}
-            onChange={e => set('dotColor', e.target.value)}
-            className="color-input"
-          />
-        </div>
-        <div className="color-row">
-          <label className={`control-label color-label${params.transparentBg ? ' disabled' : ''}`}>
-            Background
-          </label>
-          <input
-            type="color"
-            value={params.bgColor}
-            onChange={e => set('bgColor', e.target.value)}
-            className="color-input"
-            disabled={params.transparentBg}
-          />
-        </div>
+        <ColorField
+          label="Dot Color"
+          value={params.dotColor}
+          onChange={c => set('dotColor', c)}
+        />
+        <ColorField
+          label="Background"
+          value={params.bgColor}
+          onChange={c => set('bgColor', c)}
+          disabled={params.transparentBg}
+        />
         <div className="checkbox-row">
           <input
             type="checkbox"
@@ -250,12 +217,52 @@ interface SliderProps {
 }
 
 function SliderControl({ label, value, min, max, step, onChange, unit = '', decimals = 0 }: SliderProps) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
   const display = decimals > 0 ? value.toFixed(decimals) : String(value);
+
+  function startEdit() {
+    setDraft(String(value));
+    setEditing(true);
+  }
+
+  function commit() {
+    const n = parseFloat(draft);
+    if (!isNaN(n)) {
+      onChange(Math.min(max, Math.max(min, n)));
+    }
+    setEditing(false);
+  }
+
   return (
     <div className="control-group">
       <div className="control-label-row">
         <span className="control-label">{label}</span>
-        <span className="control-value">{display}{unit}</span>
+        {editing ? (
+          <input
+            type="number"
+            className="control-value-input"
+            value={draft}
+            min={min}
+            max={max}
+            step={step}
+            autoFocus
+            onChange={e => setDraft(e.target.value)}
+            onBlur={commit}
+            onKeyDown={e => {
+              if (e.key === 'Enter') commit();
+              else if (e.key === 'Escape') setEditing(false);
+            }}
+          />
+        ) : (
+          <span
+            className="control-value control-value--editable"
+            onClick={startEdit}
+            title="Klicken zum Eingeben"
+          >
+            {display}{unit}
+          </span>
+        )}
       </div>
       <input
         type="range"

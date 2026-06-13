@@ -377,7 +377,7 @@ export function createSketch(container: HTMLElement): SketchHandle {
       p.clear();
 
       if (!loadedImage || !pg || !src) {
-        p.background(240);
+        p.background(255);
         return;
       }
 
@@ -498,6 +498,13 @@ export function createSketch(container: HTMLElement): SketchHandle {
     );
   }
 
+  function clearImage(): void {
+    loadedImage = null;
+    applyCanvasSize(p5Instance);
+    rebuildSrc();
+    p5Instance.redraw();
+  }
+
   async function exportImage(format: ExportFormat): Promise<void> {
     // Exports always run at full resolution: temporarily leave preview mode,
     // re-render, export, then restore the preview-resolution canvas.
@@ -609,5 +616,5 @@ export function createSketch(container: HTMLElement): SketchHandle {
     p5Instance.remove();
   }
 
-  return { setParams, setImage, exportImage, destroy };
+  return { setParams, setImage, clearImage, exportImage, destroy };
 }

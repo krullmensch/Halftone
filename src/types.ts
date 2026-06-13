@@ -72,6 +72,8 @@ export interface SketchHandle {
   setParams(params: HalftoneParams): void;
   /** Object URL or regular URL of the source image */
   setImage(url: string): void;
+  /** Drop the loaded image and return the canvas to its empty state */
+  clearImage(): void;
   /** PNG keeps transparency; JPG flattens transparent bg onto bgColor;
    *  SVG traces the ink/background pixel boundary of the post-processed bitmap
    *  (including ink-bleed merging) into vector paths. */

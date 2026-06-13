@@ -1,14 +1,17 @@
 import { useEffect, useRef } from 'react';
 import { HalftoneParams, ExportFormat } from '../types';
 import type { SketchHandle } from '../types';
+import CanvasUpload from './CanvasUpload';
 
 interface Props {
   params: HalftoneParams;
   imageUrl: string | null;
   registerExport: (fn: (format: ExportFormat) => void) => void;
+  loadFile: (file: File) => void;
+  onRemove: () => void;
 }
 
-export default function HalftoneCanvas({ params, imageUrl, registerExport }: Props) {
+export default function HalftoneCanvas({ params, imageUrl, registerExport, loadFile, onRemove }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const handleRef = useRef<SketchHandle | null>(null);
 
@@ -46,6 +49,8 @@ export default function HalftoneCanvas({ params, imageUrl, registerExport }: Pro
   useEffect(() => {
     if (imageUrl) {
       handleRef.current?.setImage(imageUrl);
+    } else {
+      handleRef.current?.clearImage();
     }
   }, [imageUrl]);
 
@@ -59,6 +64,10 @@ export default function HalftoneCanvas({ params, imageUrl, registerExport }: Pro
   return (
     <div className="canvas-wrapper">
       <div ref={containerRef} className="sketch-container" />
+      {!imageUrl && <CanvasUpload loadFile={loadFile} />}
+      {imageUrl && (
+        <button className="canvas-remove-btn" onClick={onRemove} aria-label="Bild entfernen">×</button>
+      )}
     </div>
   );
 }
