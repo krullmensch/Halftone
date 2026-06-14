@@ -386,8 +386,6 @@ function SliderControl({ label, value, min, max, step, onChange, unit = '', deci
             type="number"
             className="control-value-input"
             value={draft}
-            min={min}
-            max={max}
             step={step}
             autoFocus
             onChange={e => setDraft(e.target.value)}
