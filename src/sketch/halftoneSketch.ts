@@ -33,54 +33,61 @@ function canvasBlurSupported(): boolean {
   return _canvasBlurOK;
 }
 
-/** One separable box-blur pass (RGB only; alpha copied through). */
-function boxBlurPass(
+/** Normalized 1D Gaussian kernel for a given standard deviation. */
+function gaussianKernel(sigma: number): Float32Array {
+  const r = Math.max(1, Math.ceil(sigma * 3));
+  const size = 2 * r + 1;
+  const k = new Float32Array(size);
+  const s2 = 2 * sigma * sigma;
+  let sum = 0;
+  for (let i = -r; i <= r; i++) {
+    const v = Math.exp(-(i * i) / s2);
+    k[i + r] = v;
+    sum += v;
+  }
+  for (let i = 0; i < size; i++) k[i] /= sum;
+  return k;
+}
+
+/** One separable Gaussian convolution pass (RGB only; alpha copied through). */
+function gaussianPass(
   inp: Uint8ClampedArray, out: Uint8ClampedArray,
-  w: number, h: number, r: number, horizontal: boolean,
+  w: number, h: number, kernel: Float32Array, horizontal: boolean,
 ): void {
-  const win = 2 * r + 1;
+  const r = (kernel.length - 1) / 2;
   const clamp = (v: number, hi: number) => (v < 0 ? 0 : v > hi ? hi : v);
-  if (horizontal) {
-    for (let y = 0; y < h; y++) {
-      const row = y * w * 4;
-      for (let c = 0; c < 3; c++) {
-        let sum = 0;
-        for (let k = -r; k <= r; k++) sum += inp[row + clamp(k, w - 1) * 4 + c];
-        for (let x = 0; x < w; x++) {
-          out[row + x * 4 + c] = sum / win;
-          sum += inp[row + clamp(x + r + 1, w - 1) * 4 + c]
-               - inp[row + clamp(x - r, w - 1) * 4 + c];
-        }
-      }
-      for (let x = 0; x < w; x++) out[row + x * 4 + 3] = inp[row + x * 4 + 3];
-    }
-  } else {
+  for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
-      for (let c = 0; c < 3; c++) {
-        let sum = 0;
-        for (let k = -r; k <= r; k++) sum += inp[(clamp(k, h - 1) * w + x) * 4 + c];
-        for (let y = 0; y < h; y++) {
-          out[(y * w + x) * 4 + c] = sum / win;
-          sum += inp[(clamp(y + r + 1, h - 1) * w + x) * 4 + c]
-               - inp[(clamp(y - r, h - 1) * w + x) * 4 + c];
-        }
+      let acc0 = 0, acc1 = 0, acc2 = 0;
+      for (let k = -r; k <= r; k++) {
+        const base = horizontal
+          ? (y * w + clamp(x + k, w - 1)) * 4
+          : (clamp(y + k, h - 1) * w + x) * 4;
+        const wk = kernel[k + r];
+        acc0 += inp[base] * wk;
+        acc1 += inp[base + 1] * wk;
+        acc2 += inp[base + 2] * wk;
       }
-      for (let y = 0; y < h; y++) out[(y * w + x) * 4 + 3] = inp[(y * w + x) * 4 + 3];
+      const o = (y * w + x) * 4;
+      out[o] = acc0;
+      out[o + 1] = acc1;
+      out[o + 2] = acc2;
+      out[o + 3] = inp[o + 3];
     }
   }
 }
 
 /**
- * Manual Gaussian-approximating blur (3 box-blur passes) on RGBA pixel data,
- * mutating it in place. Fallback for browsers without canvas filter support.
+ * True separable Gaussian blur on RGBA pixel data, mutating it in place.
+ * `sigma` matches the CSS/canvas `blur(sigma px)` standard deviation so the
+ * fallback (iOS Safari) looks identical to the native filter path on desktop.
  */
-function boxBlur(data: Uint8ClampedArray, w: number, h: number, radius: number): void {
-  const r = Math.max(1, Math.round(radius));
+function gaussianBlur(data: Uint8ClampedArray, w: number, h: number, sigma: number): void {
+  if (sigma <= 0) return;
+  const kernel = gaussianKernel(sigma);
   const tmp = new Uint8ClampedArray(data.length);
-  for (let pass = 0; pass < 3; pass++) {
-    boxBlurPass(data, tmp, w, h, r, true);
-    boxBlurPass(tmp, data, w, h, r, false);
-  }
+  gaussianPass(data, tmp, w, h, kernel, true);
+  gaussianPass(tmp, data, w, h, kernel, false);
 }
 
 /**
@@ -448,7 +455,7 @@ export function createSketch(container: HTMLElement): SketchHandle {
     // Fallback blur for browsers without canvas filter support (e.g. iOS Safari)
     if (preBlur > 0 && !useFilter) {
       const id = ctx.getImageData(0, 0, cw, ch);
-      boxBlur(id.data, cw, ch, preBlur * scale);
+      gaussianBlur(id.data, cw, ch, preBlur * scale);
       ctx.putImageData(id, 0, 0);
     }
 
@@ -500,7 +507,7 @@ export function createSketch(container: HTMLElement): SketchHandle {
       if (useFilter) ctx.filter = 'none';
       imgData = ctx.getImageData(0, 0, w, h);
       // Fallback blur for browsers without canvas filter support (e.g. iOS Safari)
-      if (!useFilter) boxBlur(imgData.data, w, h, radius);
+      if (!useFilter) gaussianBlur(imgData.data, w, h, radius);
       const d = imgData.data;
       const soft = 0.08; // smoothstep half-width → anti-aliased edges
       for (let i = 0; i < d.length; i += 4) {
