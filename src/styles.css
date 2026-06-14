@@ -432,6 +432,94 @@ body {
   background: var(--accent-hover);
 }
 
+/* ── Tabs (Bild / Text) ──────────────────────────────────────── */
+
+.tab-group {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  margin-bottom: 4px;
+}
+
+.tab-btn {
+  flex: 1;
+  padding: 7px 0;
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.tab-btn:hover {
+  color: var(--text);
+}
+
+.tab-btn.active {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+/* ── Text input ──────────────────────────────────────────────── */
+
+.text-input {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 8px;
+  outline: none;
+}
+
+.text-input:focus {
+  border-color: var(--accent);
+}
+
+/* ── Text box editor overlay (Figma-style) ───────────────────── */
+
+.textbox-overlay {
+  position: absolute;
+  z-index: 6;
+  pointer-events: none;
+}
+
+.textbox-frame {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1.5px solid var(--accent);
+  background: rgba(255, 255, 255, 0.04);
+  cursor: move;
+  pointer-events: auto;
+}
+
+.textbox-handle {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  background: var(--bg);
+  border: 1.5px solid var(--accent);
+  border-radius: 2px;
+  pointer-events: auto;
+}
+
+.textbox-handle--nw { top: -6px; left: -6px; cursor: nwse-resize; }
+.textbox-handle--ne { top: -6px; right: -6px; cursor: nesw-resize; }
+.textbox-handle--se { bottom: -6px; right: -6px; cursor: nwse-resize; }
+.textbox-handle--sw { bottom: -6px; left: -6px; cursor: nesw-resize; }
+
 /* ── Canvas area ─────────────────────────────────────────────── */
 
 .canvas-wrapper {

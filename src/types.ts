@@ -4,7 +4,43 @@ export type GridType = 'regular' | 'benday';
  *  DIN formats use the A-series 1:√2 ratio, 'square' is 1:1. */
 export type CanvasFormat = 'auto' | 'din-portrait' | 'din-landscape' | 'square';
 
+/** Source mode: halftone an uploaded image, or rendered text. */
+export type CanvasMode = 'image' | 'text';
+
+export type TextAlign = 'left' | 'center' | 'right';
+
+/** A single variable-font axis (from the font's fvar table). */
+export interface FontAxis {
+  /** 4-char axis tag, e.g. "wght", "wdth", "slnt" */
+  tag: string;
+  /** Human-readable axis name, e.g. "Weight" */
+  name: string;
+  min: number;
+  max: number;
+  default: number;
+}
+
+/** Metadata for a loaded font (kept in React state, alongside the registered FontFace). */
+export interface FontInfo {
+  /** Generated unique CSS family name the FontFace was registered under */
+  family: string;
+  /** Original file name, shown in the UI */
+  name: string;
+  /** Variable-font axes (empty for static fonts) */
+  axes: FontAxis[];
+}
+
+/** Normalized 0–1 rectangle inside the canvas (InDesign/Figma-style text box). */
+export interface TextBox {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 export interface HalftoneParams {
+  /** Source mode: image upload or rendered text */
+  mode: CanvasMode;
   /** Working resolution: length of the longest canvas side in px (600–4000). */
   canvasSize: number;
   /** Canvas aspect ratio mode (see CanvasFormat) */
@@ -43,9 +79,32 @@ export interface HalftoneParams {
   /** If true, the background is fully transparent (PNG/SVG export keeps alpha;
    *  JPG export flattens onto bgColor) */
   transparentBg: boolean;
+
+  // ── Text mode ──────────────────────────────────────────────────────────
+  /** Free canvas width in px (text mode only) */
+  canvasWidth: number;
+  /** Free canvas height in px (text mode only) */
+  canvasHeight: number;
+  /** Text content to render */
+  text: string;
+  /** CSS family name of the loaded FontFace ('' until a font is uploaded) */
+  fontFamily: string;
+  /** Font size in px */
+  fontSize: number;
+  /** Line height as a multiple of fontSize */
+  lineHeight: number;
+  /** Letter spacing in px */
+  letterSpacing: number;
+  /** Horizontal text alignment within the text box */
+  textAlign: TextAlign;
+  /** Variable-font axis values, keyed by axis tag (e.g. { wght: 700 }) */
+  fontAxes: Record<string, number>;
+  /** Normalized 0–1 text box rect within the canvas */
+  textBox: TextBox;
 }
 
 export const DEFAULT_PARAMS: HalftoneParams = {
+  mode: 'image',
   canvasSize: 2400,
   canvasFormat: 'auto',
   imageOffsetX: 0.5,
@@ -63,6 +122,16 @@ export const DEFAULT_PARAMS: HalftoneParams = {
   dotColor: '#000000',
   bgColor: '#ffffff',
   transparentBg: false,
+  canvasWidth: 1600,
+  canvasHeight: 900,
+  text: 'Halftone',
+  fontFamily: '',
+  fontSize: 320,
+  lineHeight: 1.1,
+  letterSpacing: 0,
+  textAlign: 'center',
+  fontAxes: {},
+  textBox: { x: 0.08, y: 0.08, w: 0.84, h: 0.84 },
 };
 
 export type ExportFormat = 'png' | 'jpg' | 'svg';

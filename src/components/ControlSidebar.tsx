@@ -1,5 +1,7 @@
-import { useState } from 'react';
-import { HalftoneParams, GridType, CanvasFormat, ExportFormat } from '../types';
+import { useRef, useState } from 'react';
+import {
+  HalftoneParams, GridType, CanvasFormat, ExportFormat, FontInfo, TextAlign,
+} from '../types';
 import ColorField from './ColorField';
 
 interface Props {
@@ -8,53 +10,192 @@ interface Props {
   onExport: (format: ExportFormat) => void;
   onOpenCrop: () => void;
   hasImage: boolean;
+  fontInfo: FontInfo | null;
+  loadFont: (file: File) => void;
 }
 
-export default function ControlSidebar({ params, onChange, onExport, onOpenCrop, hasImage }: Props) {
+export default function ControlSidebar({
+  params, onChange, onExport, onOpenCrop, hasImage, fontInfo, loadFont,
+}: Props) {
+  const fontInputRef = useRef<HTMLInputElement>(null);
+
   function set<K extends keyof HalftoneParams>(key: K, value: HalftoneParams[K]) {
     onChange({ ...params, [key]: value });
   }
+
+  const isText = params.mode === 'text';
 
   return (
     <div className="sidebar-inner">
       <h2 className="sidebar-title">Halftone Ink Bleed</h2>
 
-      <SliderControl
-        label="Canvas Size"
-        value={params.canvasSize}
-        min={600}
-        max={4000}
-        step={100}
-        onChange={v => set('canvasSize', v)}
-        unit="px"
-      />
-
-      <div className="control-group">
-        <label className="control-label">Format</label>
-        <div className="toggle-group toggle-group--wrap">
-          {(
-            [
-              ['auto', 'Fit Image'],
-              ['din-portrait', 'DIN Hoch'],
-              ['din-landscape', 'DIN Quer'],
-              ['square', '1:1'],
-            ] as [CanvasFormat, string][]
-          ).map(([value, label]) => (
-            <button
-              key={value}
-              className={`toggle-btn${params.canvasFormat === value ? ' active' : ''}`}
-              onClick={() => set('canvasFormat', value)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+      <div className="tab-group">
+        <button
+          className={`tab-btn${!isText ? ' active' : ''}`}
+          onClick={() => set('mode', 'image')}
+        >
+          Bild
+        </button>
+        <button
+          className={`tab-btn${isText ? ' active' : ''}`}
+          onClick={() => set('mode', 'text')}
+        >
+          Text
+        </button>
       </div>
 
-      {params.canvasFormat !== 'auto' && hasImage && (
-        <button className="position-btn" onClick={onOpenCrop}>
-          Bild positionieren…
-        </button>
+      {!isText && (
+        <>
+          <SliderControl
+            label="Canvas Size"
+            value={params.canvasSize}
+            min={600}
+            max={4000}
+            step={100}
+            onChange={v => set('canvasSize', v)}
+            unit="px"
+          />
+
+          <div className="control-group">
+            <label className="control-label">Format</label>
+            <div className="toggle-group toggle-group--wrap">
+              {(
+                [
+                  ['auto', 'Fit Image'],
+                  ['din-portrait', 'DIN Hoch'],
+                  ['din-landscape', 'DIN Quer'],
+                  ['square', '1:1'],
+                ] as [CanvasFormat, string][]
+              ).map(([value, label]) => (
+                <button
+                  key={value}
+                  className={`toggle-btn${params.canvasFormat === value ? ' active' : ''}`}
+                  onClick={() => set('canvasFormat', value)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {params.canvasFormat !== 'auto' && hasImage && (
+            <button className="position-btn" onClick={onOpenCrop}>
+              Bild positionieren…
+            </button>
+          )}
+        </>
+      )}
+
+      {isText && (
+        <>
+          <SliderControl
+            label="Canvas Width"
+            value={params.canvasWidth}
+            min={100}
+            max={6000}
+            step={10}
+            onChange={v => set('canvasWidth', v)}
+            unit="px"
+          />
+          <SliderControl
+            label="Canvas Height"
+            value={params.canvasHeight}
+            min={100}
+            max={6000}
+            step={10}
+            onChange={v => set('canvasHeight', v)}
+            unit="px"
+          />
+
+          <div className="control-group">
+            <label className="control-label">Font</label>
+            <button className="position-btn" onClick={() => fontInputRef.current?.click()}>
+              {fontInfo ? `${fontInfo.name} — ersetzen…` : 'Font hochladen…'}
+            </button>
+            <input
+              ref={fontInputRef}
+              type="file"
+              accept=".woff,.woff2,.ttf,.otf,font/woff,font/woff2,font/ttf,font/otf"
+              style={{ display: 'none' }}
+              onChange={e => {
+                const f = e.target.files?.[0];
+                if (f) loadFont(f);
+                e.target.value = '';
+              }}
+            />
+          </div>
+
+          <div className="control-group">
+            <label className="control-label">Text</label>
+            <textarea
+              className="text-input"
+              value={params.text}
+              rows={3}
+              onChange={e => set('text', e.target.value)}
+            />
+          </div>
+
+          <SliderControl
+            label="Font Size"
+            value={params.fontSize}
+            min={8}
+            max={1000}
+            step={1}
+            onChange={v => set('fontSize', v)}
+            unit="px"
+          />
+          <SliderControl
+            label="Line Height"
+            value={params.lineHeight}
+            min={0.6}
+            max={3}
+            step={0.05}
+            onChange={v => set('lineHeight', v)}
+            decimals={2}
+          />
+          <SliderControl
+            label="Letter Spacing"
+            value={params.letterSpacing}
+            min={-20}
+            max={100}
+            step={1}
+            onChange={v => set('letterSpacing', v)}
+            unit="px"
+          />
+
+          <div className="control-group">
+            <label className="control-label">Align</label>
+            <div className="toggle-group">
+              {(['left', 'center', 'right'] as TextAlign[]).map(a => (
+                <button
+                  key={a}
+                  className={`toggle-btn${params.textAlign === a ? ' active' : ''}`}
+                  onClick={() => set('textAlign', a)}
+                >
+                  {a}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {fontInfo && fontInfo.axes.length > 0 && (
+            <>
+              <div className="control-section-label">Variable Axes</div>
+              {fontInfo.axes.map(axis => (
+                <SliderControl
+                  key={axis.tag}
+                  label={`${axis.name} (${axis.tag})`}
+                  value={params.fontAxes[axis.tag] ?? axis.default}
+                  min={axis.min}
+                  max={axis.max}
+                  step={(axis.max - axis.min) / 200 || 1}
+                  onChange={v => set('fontAxes', { ...params.fontAxes, [axis.tag]: v })}
+                  decimals={1}
+                />
+              ))}
+            </>
+          )}
+        </>
       )}
 
       <div className="control-group">
