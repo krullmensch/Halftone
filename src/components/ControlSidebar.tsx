@@ -370,7 +370,9 @@ function SliderControl({ label, value, min, max, step, onChange, unit = '', deci
   function commit() {
     const n = parseFloat(draft);
     if (!isNaN(n)) {
-      onChange(Math.min(max, Math.max(min, n)));
+      // Typed values are free — the slider stays clamped, but manual entry
+      // can exceed min/max so the user can push effects beyond the UI range.
+      onChange(n);
     }
     setEditing(false);
   }
