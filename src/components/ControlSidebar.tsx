@@ -248,25 +248,30 @@ export default function ControlSidebar({
         unit="°"
       />
 
-      <SliderControl
-        label="Pre-Blur"
-        value={params.preBlur}
-        min={0}
-        max={20}
-        step={0.5}
-        onChange={v => set('preBlur', v)}
-        unit="px"
-        decimals={1}
-      />
+      {/* Pre-Blur and Noise are image-only filters — hidden in text mode */}
+      {!isText && (
+        <>
+          <SliderControl
+            label="Pre-Blur"
+            value={params.preBlur}
+            min={0}
+            max={20}
+            step={0.5}
+            onChange={v => set('preBlur', v)}
+            unit="px"
+            decimals={1}
+          />
 
-      <SliderControl
-        label="Noise Amount"
-        value={params.noiseAmount}
-        min={0}
-        max={100}
-        step={1}
-        onChange={v => set('noiseAmount', v)}
-      />
+          <SliderControl
+            label="Noise Amount"
+            value={params.noiseAmount}
+            min={0}
+            max={100}
+            step={1}
+            onChange={v => set('noiseAmount', v)}
+          />
+        </>
+      )}
 
       <SliderControl
         label="Halftone Threshold"
