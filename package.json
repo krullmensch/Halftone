@@ -9,6 +9,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@types/opentype.js": "^1.3.10",
+    "opentype.js": "^2.0.0",
     "p5": "^2.3.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7"

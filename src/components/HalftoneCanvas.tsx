@@ -1,7 +1,9 @@
 import { useEffect, useRef } from 'react';
-import { HalftoneParams, ExportFormat } from '../types';
+import { HalftoneParams, ExportFormat, FontInfo, TextBox } from '../types';
 import type { SketchHandle } from '../types';
 import CanvasUpload from './CanvasUpload';
+import CanvasFontUpload from './CanvasFontUpload';
+import TextBoxEditor from './TextBoxEditor';
 
 interface Props {
   params: HalftoneParams;
@@ -9,9 +11,16 @@ interface Props {
   registerExport: (fn: (format: ExportFormat) => void) => void;
   loadFile: (file: File) => void;
   onRemove: () => void;
+  fontInfo: FontInfo | null;
+  loadFont: (file: File) => void;
+  onTextBoxChange: (box: TextBox) => void;
 }
 
-export default function HalftoneCanvas({ params, imageUrl, registerExport, loadFile, onRemove }: Props) {
+export default function HalftoneCanvas({
+  params, imageUrl, registerExport, loadFile, onRemove,
+  fontInfo, loadFont, onTextBoxChange,
+}: Props) {
+  const wrapperRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const handleRef = useRef<SketchHandle | null>(null);
 
@@ -61,12 +70,31 @@ export default function HalftoneCanvas({ params, imageUrl, registerExport, loadF
     });
   }, [registerExport]);
 
+  const isText = params.mode === 'text';
+
   return (
-    <div className="canvas-wrapper">
+    <div ref={wrapperRef} className="canvas-wrapper">
       <div ref={containerRef} className="sketch-container" />
-      {!imageUrl && <CanvasUpload loadFile={loadFile} />}
-      {imageUrl && (
-        <button className="canvas-remove-btn" onClick={onRemove} aria-label="Bild entfernen">×</button>
+
+      {isText ? (
+        <>
+          {!fontInfo && <CanvasFontUpload loadFont={loadFont} />}
+          {fontInfo && (
+            <TextBoxEditor
+              containerRef={containerRef}
+              wrapperRef={wrapperRef}
+              textBox={params.textBox}
+              onChange={onTextBoxChange}
+            />
+          )}
+        </>
+      ) : (
+        <>
+          {!imageUrl && <CanvasUpload loadFile={loadFile} />}
+          {imageUrl && (
+            <button className="canvas-remove-btn" onClick={onRemove} aria-label="Bild entfernen">×</button>
+          )}
+        </>
       )}
     </div>
   );

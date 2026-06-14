@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef } from 'react';
-import { HalftoneParams, DEFAULT_PARAMS, ExportFormat } from './types';
+import { HalftoneParams, DEFAULT_PARAMS, ExportFormat, FontInfo, FontAxis } from './types';
 import ControlSidebar from './components/ControlSidebar';
 import HalftoneCanvas from './components/HalftoneCanvas';
 import CropModal from './components/CropModal';
@@ -17,6 +17,7 @@ function canvasAspect(format: HalftoneParams['canvasFormat']): number {
 export default function App() {
   const [params, setParams] = useState<HalftoneParams>(DEFAULT_PARAMS);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [fontInfo, setFontInfo] = useState<FontInfo | null>(null);
   const [cropOpen, setCropOpen] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [absorbing, setAbsorbing] = useState(false);
@@ -43,6 +44,41 @@ export default function App() {
     const url = URL.createObjectURL(file);
     objectUrlRef.current = url;
     setImageUrl(url);
+  }, []);
+
+  const loadFont = useCallback(async (file: File) => {
+    const buf = await file.arrayBuffer();
+    const family = `htf-${Date.now()}`;
+    const ff = new FontFace(family, buf);
+    await ff.load();
+    document.fonts.add(ff);
+
+    // Parse variable-font axes (opentype.js does not support woff2 → skip silently)
+    let axes: FontAxis[] = [];
+    try {
+      const opentype = await import('opentype.js');
+      const font = opentype.parse(buf.slice(0));
+      const fvar = (font.tables as { fvar?: { axes?: any[] } }).fvar;
+      if (fvar?.axes) {
+        axes = fvar.axes.map((a: any) => ({
+          tag: a.tag,
+          name: a.name?.en || a.name?.['en'] || a.tag,
+          min: a.minValue,
+          max: a.maxValue,
+          default: a.defaultValue,
+        }));
+      }
+    } catch {
+      // Static font, woff2, or unparsable axes — render still works via FontFace
+    }
+
+    setFontInfo({ family, name: file.name, axes });
+    setParams(p => ({
+      ...p,
+      mode: 'text',
+      fontFamily: family,
+      fontAxes: Object.fromEntries(axes.map(a => [a.tag, a.default])),
+    }));
   }, []);
 
   const handleRemoveImage = useCallback(() => {
@@ -123,6 +159,8 @@ export default function App() {
           onExport={handleExport}
           onOpenCrop={() => setCropOpen(true)}
           hasImage={!!imageUrl}
+          fontInfo={fontInfo}
+          loadFont={loadFont}
         />
       </aside>
       <main className="canvas-area">
@@ -132,6 +170,9 @@ export default function App() {
           registerExport={registerExport}
           loadFile={loadFile}
           onRemove={handleRemoveImage}
+          fontInfo={fontInfo}
+          loadFont={loadFont}
+          onTextBoxChange={box => setParams(p => ({ ...p, textBox: box }))}
         />
       </main>
       {(dragging || absorbing) && (

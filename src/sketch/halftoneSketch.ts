@@ -181,7 +181,19 @@ export function createSketch(container: HTMLElement): SketchHandle {
    */
   function renderScale(): number {
     if (exportFullRes || !currentParams.preview) return 1;
-    return Math.min(1, PREVIEW_MAX / currentParams.canvasSize);
+    const longest =
+      currentParams.mode === 'text'
+        ? Math.max(currentParams.canvasWidth, currentParams.canvasHeight)
+        : currentParams.canvasSize;
+    return Math.min(1, PREVIEW_MAX / longest);
+  }
+
+  /** Whether the current mode has something to render. */
+  function hasContent(): boolean {
+    if (currentParams.mode === 'text') {
+      return !!currentParams.fontFamily && currentParams.text.length > 0;
+    }
+    return !!loadedImage;
   }
 
   /** Deterministic PRNG so the source grain is stable across re-renders. */
@@ -200,7 +212,15 @@ export function createSketch(container: HTMLElement): SketchHandle {
    * the loaded image. If no image is loaded, keeps square canvasSize × canvasSize.
    */
   function computeDims(): { w: number; h: number } {
-    const size = Math.round(currentParams.canvasSize * renderScale());
+    const scaleDims = renderScale();
+    // Text mode: free width × height
+    if (currentParams.mode === 'text') {
+      return {
+        w: Math.max(1, Math.round(currentParams.canvasWidth * scaleDims)),
+        h: Math.max(1, Math.round(currentParams.canvasHeight * scaleDims)),
+      };
+    }
+    const size = Math.round(currentParams.canvasSize * scaleDims);
     const fmt = currentParams.canvasFormat;
     if (fmt === 'din-portrait') {
       return { w: Math.max(1, Math.round(size / Math.SQRT2)), h: size };
@@ -248,7 +268,87 @@ export function createSketch(container: HTMLElement): SketchHandle {
    * Scale the loaded image into the src buffer (no cropping), apply optional
    * pre-blur and luminance grain, then reload pixels for sampling.
    */
+  /**
+   * Render the current text into the src buffer (black on white) inside the
+   * normalized textBox, with word wrapping, alignment and variable-font axes.
+   */
+  function renderText(): void {
+    if (!src) return;
+    const {
+      text, fontFamily, fontSize, lineHeight, letterSpacing,
+      textAlign, fontAxes, textBox,
+    } = currentParams;
+    const scale = renderScale();
+
+    src.clear();
+    src.background(255);
+    if (!fontFamily || text.length === 0) {
+      src.loadPixels();
+      return;
+    }
+
+    const ctx = (src as any).drawingContext as CanvasRenderingContext2D;
+    const fs = fontSize * scale;
+    const lh = fs * lineHeight;
+
+    // Box in buffer pixels
+    const bx = textBox.x * cw;
+    const by = textBox.y * ch;
+    const bw = textBox.w * cw;
+    const bh = textBox.h * ch;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(bx, by, bw, bh);
+    ctx.clip();
+
+    ctx.fillStyle = '#000';
+    ctx.textBaseline = 'top';
+    ctx.textAlign = textAlign;
+    ctx.font = `${fs}px "${fontFamily}"`;
+    (ctx as any).letterSpacing = `${letterSpacing * scale}px`;
+    const axisStr = Object.entries(fontAxes)
+      .map(([tag, v]) => `"${tag}" ${v}`)
+      .join(', ');
+    (ctx as any).fontVariationSettings = axisStr || 'normal';
+
+    // Word-wrap each explicit line on the box width.
+    const lines: string[] = [];
+    for (const para of text.split('\n')) {
+      const words = para.split(' ');
+      let line = '';
+      for (const word of words) {
+        const test = line ? `${line} ${word}` : word;
+        if (ctx.measureText(test).width > bw && line) {
+          lines.push(line);
+          line = word;
+        } else {
+          line = test;
+        }
+      }
+      lines.push(line);
+    }
+
+    const tx = textAlign === 'left' ? bx : textAlign === 'right' ? bx + bw : bx + bw / 2;
+    let ty = by;
+    for (const line of lines) {
+      if (ty > by + bh) break;
+      ctx.fillText(line, tx, ty);
+      ty += lh;
+    }
+
+    ctx.restore();
+    // Reset context state that p5 may rely on elsewhere
+    (ctx as any).letterSpacing = '0px';
+    (ctx as any).fontVariationSettings = 'normal';
+    src.loadPixels();
+  }
+
   function rebuildSrc(): void {
+    if (currentParams.mode === 'text') {
+      renderText();
+      return;
+    }
     if (!loadedImage || !src) return;
     const { preBlur, noiseAmount } = currentParams;
     const scale = renderScale();
@@ -376,7 +476,7 @@ export function createSketch(container: HTMLElement): SketchHandle {
       // Always clear so transparent backgrounds show through
       p.clear();
 
-      if (!loadedImage || !pg || !src) {
+      if (!pg || !src || !hasContent()) {
         p.background(255);
         return;
       }
@@ -466,12 +566,23 @@ export function createSketch(container: HTMLElement): SketchHandle {
     const resolutionChanged =
       params.canvasSize !== prev.canvasSize ||
       params.preview !== prev.preview ||
-      params.canvasFormat !== prev.canvasFormat;
+      params.canvasFormat !== prev.canvasFormat ||
+      params.mode !== prev.mode ||
+      params.canvasWidth !== prev.canvasWidth ||
+      params.canvasHeight !== prev.canvasHeight;
     const srcChanged =
       params.preBlur !== prev.preBlur ||
       params.noiseAmount !== prev.noiseAmount ||
       params.imageOffsetX !== prev.imageOffsetX ||
-      params.imageOffsetY !== prev.imageOffsetY;
+      params.imageOffsetY !== prev.imageOffsetY ||
+      params.text !== prev.text ||
+      params.fontFamily !== prev.fontFamily ||
+      params.fontSize !== prev.fontSize ||
+      params.lineHeight !== prev.lineHeight ||
+      params.letterSpacing !== prev.letterSpacing ||
+      params.textAlign !== prev.textAlign ||
+      params.textBox !== prev.textBox ||
+      params.fontAxes !== prev.fontAxes;
 
     if (resolutionChanged) {
       applyCanvasSize(p5Instance);
