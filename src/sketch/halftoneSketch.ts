@@ -8,6 +8,82 @@ const PREVIEW_MAX = 1000;
 type Pt = { x: number; y: number };
 
 /**
+ * iOS Safari (and some older browsers) ignore CanvasRenderingContext2D.filter,
+ * so `ctx.filter = "blur(...)"` silently no-ops. Functionally probe it once:
+ * draw a black pixel with a blur and check that it bled into a neighbor.
+ */
+let _canvasBlurOK: boolean | null = null;
+function canvasBlurSupported(): boolean {
+  if (_canvasBlurOK !== null) return _canvasBlurOK;
+  try {
+    const c = document.createElement('canvas');
+    c.width = c.height = 3;
+    const cx = c.getContext('2d')!;
+    cx.fillStyle = '#fff';
+    cx.fillRect(0, 0, 3, 3);
+    cx.filter = 'blur(1px)';
+    cx.fillStyle = '#000';
+    cx.fillRect(0, 0, 1, 1);
+    cx.filter = 'none';
+    const neighbor = cx.getImageData(1, 0, 1, 1).data;
+    _canvasBlurOK = neighbor[0] < 250; // black bled in → filter honored
+  } catch {
+    _canvasBlurOK = false;
+  }
+  return _canvasBlurOK;
+}
+
+/** One separable box-blur pass (RGB only; alpha copied through). */
+function boxBlurPass(
+  inp: Uint8ClampedArray, out: Uint8ClampedArray,
+  w: number, h: number, r: number, horizontal: boolean,
+): void {
+  const win = 2 * r + 1;
+  const clamp = (v: number, hi: number) => (v < 0 ? 0 : v > hi ? hi : v);
+  if (horizontal) {
+    for (let y = 0; y < h; y++) {
+      const row = y * w * 4;
+      for (let c = 0; c < 3; c++) {
+        let sum = 0;
+        for (let k = -r; k <= r; k++) sum += inp[row + clamp(k, w - 1) * 4 + c];
+        for (let x = 0; x < w; x++) {
+          out[row + x * 4 + c] = sum / win;
+          sum += inp[row + clamp(x + r + 1, w - 1) * 4 + c]
+               - inp[row + clamp(x - r, w - 1) * 4 + c];
+        }
+      }
+      for (let x = 0; x < w; x++) out[row + x * 4 + 3] = inp[row + x * 4 + 3];
+    }
+  } else {
+    for (let x = 0; x < w; x++) {
+      for (let c = 0; c < 3; c++) {
+        let sum = 0;
+        for (let k = -r; k <= r; k++) sum += inp[(clamp(k, h - 1) * w + x) * 4 + c];
+        for (let y = 0; y < h; y++) {
+          out[(y * w + x) * 4 + c] = sum / win;
+          sum += inp[(clamp(y + r + 1, h - 1) * w + x) * 4 + c]
+               - inp[(clamp(y - r, h - 1) * w + x) * 4 + c];
+        }
+      }
+      for (let y = 0; y < h; y++) out[(y * w + x) * 4 + 3] = inp[(y * w + x) * 4 + 3];
+    }
+  }
+}
+
+/**
+ * Manual Gaussian-approximating blur (3 box-blur passes) on RGBA pixel data,
+ * mutating it in place. Fallback for browsers without canvas filter support.
+ */
+function boxBlur(data: Uint8ClampedArray, w: number, h: number, radius: number): void {
+  const r = Math.max(1, Math.round(radius));
+  const tmp = new Uint8ClampedArray(data.length);
+  for (let pass = 0; pass < 3; pass++) {
+    boxBlurPass(data, tmp, w, h, r, true);
+    boxBlurPass(tmp, data, w, h, r, false);
+  }
+}
+
+/**
  * Marching-squares contour extraction on a continuous W×H ink-intensity field.
  * Edge crossings are linearly interpolated (sub-pixel), so anti-aliased dot
  * rims and ink-bleed gradients become smooth boundaries instead of the raster
@@ -364,9 +440,17 @@ export function createSketch(container: HTMLElement): SketchHandle {
     const dh = imgH * s;
     const dx = -(dw - cw) * currentParams.imageOffsetX;
     const dy = -(dh - ch) * currentParams.imageOffsetY;
-    if (preBlur > 0) ctx.filter = `blur(${preBlur * scale}px)`;
+    const useFilter = canvasBlurSupported();
+    if (preBlur > 0 && useFilter) ctx.filter = `blur(${preBlur * scale}px)`;
     src.image(loadedImage, dx, dy, dw, dh);
-    if (preBlur > 0) ctx.filter = 'none';
+    if (preBlur > 0 && useFilter) ctx.filter = 'none';
+
+    // Fallback blur for browsers without canvas filter support (e.g. iOS Safari)
+    if (preBlur > 0 && !useFilter) {
+      const id = ctx.getImageData(0, 0, cw, ch);
+      boxBlur(id.data, cw, ch, preBlur * scale);
+      ctx.putImageData(id, 0, 0);
+    }
 
     if (noiseAmount > 0) {
       const imgData = ctx.getImageData(0, 0, cw, ch);
@@ -410,9 +494,13 @@ export function createSketch(container: HTMLElement): SketchHandle {
       // pixels outside the canvas bounds.
       ctx.fillStyle = '#fff';
       ctx.fillRect(0, 0, w, h);
-      ctx.filter = `blur(${radius}px)`;
+      const useFilter = canvasBlurSupported();
+      if (useFilter) ctx.filter = `blur(${radius}px)`;
       ctx.drawImage((pg as any).elt, 0, 0);
+      if (useFilter) ctx.filter = 'none';
       imgData = ctx.getImageData(0, 0, w, h);
+      // Fallback blur for browsers without canvas filter support (e.g. iOS Safari)
+      if (!useFilter) boxBlur(imgData.data, w, h, radius);
       const d = imgData.data;
       const soft = 0.08; // smoothstep half-width → anti-aliased edges
       for (let i = 0; i < d.length; i += 4) {
