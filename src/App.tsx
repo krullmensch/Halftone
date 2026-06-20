@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { HalftoneParams, DEFAULT_PARAMS, ExportFormat, FontInfo, FontAxis } from './types';
 import ControlSidebar from './components/ControlSidebar';
 import HalftoneCanvas from './components/HalftoneCanvas';
@@ -17,6 +17,9 @@ function canvasAspect(format: HalftoneParams['canvasFormat']): number {
 export default function App() {
   const [params, setParams] = useState<HalftoneParams>(DEFAULT_PARAMS);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [maskBitmap, setMaskBitmap] = useState<ImageBitmap | null>(null);
+  const [maskLoading, setMaskLoading] = useState(false);
+  const maskCacheUrl = useRef<string | null>(null);
   const [fontInfo, setFontInfo] = useState<FontInfo | null>(null);
   const [cropOpen, setCropOpen] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -26,6 +29,43 @@ export default function App() {
   const objectUrlRef = useRef<string | null>(null);
   const dragDepth = useRef(0);
   const effectRef = useRef<DropEffectHandle>(null);
+
+  // Compute the AI foreground mask once per image, lazily when background
+  // removal is enabled. Cached by imageUrl so toggling/threshold stays cheap.
+  useEffect(() => {
+    if (!imageUrl) {
+      maskCacheUrl.current = null;
+      setMaskBitmap(null);
+      return;
+    }
+    // Image changed → drop a mask computed for a previous image
+    if (imageUrl !== maskCacheUrl.current && maskBitmap) {
+      maskCacheUrl.current = null;
+      setMaskBitmap(null);
+    }
+    if (!params.removeBackground) return;
+    if (imageUrl === maskCacheUrl.current) return; // already cached
+
+    let cancelled = false;
+    setMaskLoading(true);
+    (async () => {
+      try {
+        const imgly = await import('@imgly/background-removal');
+        const blob = await imgly.removeBackground(imageUrl);
+        const bmp = await createImageBitmap(blob);
+        if (cancelled) { bmp.close?.(); return; }
+        maskCacheUrl.current = imageUrl;
+        setMaskBitmap(bmp);
+      } catch (e) {
+        if (!cancelled) console.warn('[mask] background removal failed', e);
+      } finally {
+        if (!cancelled) setMaskLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+    // maskBitmap intentionally omitted: cache is tracked via maskCacheUrl ref
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [imageUrl, params.removeBackground]);
 
   const handleExport = useCallback((format: ExportFormat) => {
     exportRef.current?.(format);
@@ -159,6 +199,7 @@ export default function App() {
           onExport={handleExport}
           onOpenCrop={() => setCropOpen(true)}
           hasImage={!!imageUrl}
+          maskLoading={maskLoading}
           fontInfo={fontInfo}
           loadFont={loadFont}
         />
@@ -167,6 +208,7 @@ export default function App() {
         <HalftoneCanvas
           params={params}
           imageUrl={imageUrl}
+          mask={maskBitmap}
           registerExport={registerExport}
           loadFile={loadFile}
           onRemove={handleRemoveImage}

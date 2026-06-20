@@ -10,12 +10,13 @@ interface Props {
   onExport: (format: ExportFormat) => void;
   onOpenCrop: () => void;
   hasImage: boolean;
+  maskLoading: boolean;
   fontInfo: FontInfo | null;
   loadFont: (file: File) => void;
 }
 
 export default function ControlSidebar({
-  params, onChange, onExport, onOpenCrop, hasImage, fontInfo, loadFont,
+  params, onChange, onExport, onOpenCrop, hasImage, maskLoading, fontInfo, loadFont,
 }: Props) {
   const fontInputRef = useRef<HTMLInputElement>(null);
 
@@ -270,6 +271,33 @@ export default function ControlSidebar({
             step={1}
             onChange={v => set('noiseAmount', v)}
           />
+
+          <div className="control-group">
+            <div className="checkbox-row">
+              <input
+                type="checkbox"
+                id="remove-bg"
+                checked={params.removeBackground}
+                onChange={e => set('removeBackground', e.target.checked)}
+                className="checkbox-input"
+              />
+              <label htmlFor="remove-bg" className="control-label checkbox-label">
+                Hintergrund entfernen (KI)
+                {maskLoading && ' — berechne Maske…'}
+              </label>
+            </div>
+          </div>
+
+          {params.removeBackground && (
+            <SliderControl
+              label="HG-Schwelle"
+              value={params.bgThreshold}
+              min={0}
+              max={255}
+              step={1}
+              onChange={v => set('bgThreshold', v)}
+            />
+          )}
         </>
       )}
 

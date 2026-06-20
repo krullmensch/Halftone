@@ -243,6 +243,10 @@ export function createSketch(container: HTMLElement): SketchHandle {
   let pg: p5.Graphics | null = null;
   // Offscreen buffer holding the source image scaled to cw × ch
   let src: p5.Graphics | null = null;
+  // AI foreground mask (subject cutout) at native resolution; alpha = foreground
+  let foregroundMask: ImageBitmap | null = null;
+  // Offscreen buffer holding the mask fitted to cw × ch (same transform as src)
+  let maskPg: p5.Graphics | null = null;
 
   // ---------------------------------------------------------------- helpers
 
@@ -345,6 +349,10 @@ export function createSketch(container: HTMLElement): SketchHandle {
     if (src) src.remove();
     src = p5inst.createGraphics(w, h);
     src.pixelDensity(1);
+
+    if (maskPg) maskPg.remove();
+    maskPg = p5inst.createGraphics(w, h);
+    maskPg.pixelDensity(1);
   }
 
   /**
@@ -427,6 +435,37 @@ export function createSketch(container: HTMLElement): SketchHandle {
     src.loadPixels();
   }
 
+  /**
+   * Cover-fit transform (like CSS background-size: cover) for content of the
+   * given native size into the current cw × ch buffer, honoring the image pan
+   * offset. Shared by the source image and the AI mask so they stay aligned.
+   */
+  function coverFit(contentW: number, contentH: number): {
+    dx: number; dy: number; dw: number; dh: number;
+  } {
+    const s = Math.max(cw / contentW, ch / contentH);
+    const dw = contentW * s;
+    const dh = contentH * s;
+    const dx = -(dw - cw) * currentParams.imageOffsetX;
+    const dy = -(dh - ch) * currentParams.imageOffsetY;
+    return { dx, dy, dw, dh };
+  }
+
+  /**
+   * Draw the foreground mask into maskPg using the same cover-fit transform as
+   * the source image, so mask alpha at (x,y) corresponds to the sampled pixel.
+   * Areas outside the mask stay alpha 0 (treated as background).
+   */
+  function rebuildMask(): void {
+    if (!maskPg) return;
+    maskPg.clear();
+    if (!foregroundMask || currentParams.mode !== 'image') return;
+    const { dx, dy, dw, dh } = coverFit(foregroundMask.width, foregroundMask.height);
+    const ctx = (maskPg as any).drawingContext as CanvasRenderingContext2D;
+    ctx.drawImage(foregroundMask, dx, dy, dw, dh);
+    maskPg.loadPixels();
+  }
+
   function rebuildSrc(): void {
     if (currentParams.mode === 'text') {
       renderText();
@@ -442,11 +481,7 @@ export function createSketch(container: HTMLElement): SketchHandle {
     const ctx = (src as any).drawingContext as CanvasRenderingContext2D;
     const imgW = loadedImage.width;
     const imgH = loadedImage.height;
-    const s = Math.max(cw / imgW, ch / imgH);
-    const dw = imgW * s;
-    const dh = imgH * s;
-    const dx = -(dw - cw) * currentParams.imageOffsetX;
-    const dy = -(dh - ch) * currentParams.imageOffsetY;
+    const { dx, dy, dw, dh } = coverFit(imgW, imgH);
     const useFilter = canvasBlurSupported();
     if (preBlur > 0 && useFilter) ctx.filter = `blur(${preBlur * scale}px)`;
     src.image(loadedImage, dx, dy, dw, dh);
@@ -473,6 +508,7 @@ export function createSketch(container: HTMLElement): SketchHandle {
     }
 
     src.loadPixels();
+    rebuildMask();
   }
 
   /**
@@ -564,6 +600,9 @@ export function createSketch(container: HTMLElement): SketchHandle {
 
       src = p.createGraphics(cw, ch);
       src.pixelDensity(1);
+
+      maskPg = p.createGraphics(cw, ch);
+      maskPg.pixelDensity(1);
     };
 
     // ------------------------------------------------------------------ draw
@@ -583,7 +622,12 @@ export function createSketch(container: HTMLElement): SketchHandle {
         halftoneThreshold,
         minDotSize,
         maxDotSize,
+        removeBackground,
+        bgThreshold,
       } = currentParams;
+
+      const useMask = removeBackground && !!foregroundMask && maskPg !== null;
+      if (useMask) maskPg!.loadPixels();
 
       const scale = renderScale();
       // Guard against degenerate stepSize
@@ -628,6 +672,10 @@ export function createSketch(container: HTMLElement): SketchHandle {
           if (sx < 0 || sx >= cw || sy < 0 || sy >= ch) continue;
 
           const idx = (sx + sy * cw) * 4;
+
+          // Drop dots that fall in the AI-segmented background
+          if (useMask && maskPg!.pixels[idx + 3] < bgThreshold) continue;
+
           const r = src.pixels[idx];
           const g = src.pixels[idx + 1];
           const b = src.pixels[idx + 2];
@@ -708,6 +756,12 @@ export function createSketch(container: HTMLElement): SketchHandle {
     loadedImage = null;
     applyCanvasSize(p5Instance);
     rebuildSrc();
+    p5Instance.redraw();
+  }
+
+  function setMask(bitmap: ImageBitmap | null): void {
+    foregroundMask = bitmap;
+    rebuildMask();
     p5Instance.redraw();
   }
 
@@ -819,8 +873,9 @@ export function createSketch(container: HTMLElement): SketchHandle {
   function destroy(): void {
     pg?.remove();
     src?.remove();
+    maskPg?.remove();
     p5Instance.remove();
   }
 
-  return { setParams, setImage, clearImage, exportImage, destroy };
+  return { setParams, setImage, clearImage, setMask, exportImage, destroy };
 }

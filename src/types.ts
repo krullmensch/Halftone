@@ -60,6 +60,10 @@ export interface HalftoneParams {
   preBlur: number;
   /** Luminance grain added to the source image (0–100, amplitude in luminance units) */
   noiseAmount: number;
+  /** If true, dots whose pixel falls in the AI-segmented background are dropped */
+  removeBackground: boolean;
+  /** Foreground-mask alpha cutoff 0–255; dots are kept only where mask alpha ≥ this */
+  bgThreshold: number;
   /** Luminance threshold 0–255; dots are only drawn where luminance < threshold */
   halftoneThreshold: number;
   /** Minimum dot size in px */
@@ -114,6 +118,8 @@ export const DEFAULT_PARAMS: HalftoneParams = {
   gridAngle: 0,
   preBlur: 0,
   noiseAmount: 0,
+  removeBackground: false,
+  bgThreshold: 128,
   halftoneThreshold: 159,
   minDotSize: 0,
   maxDotSize: 20,
@@ -143,6 +149,8 @@ export interface SketchHandle {
   setImage(url: string): void;
   /** Drop the loaded image and return the canvas to its empty state */
   clearImage(): void;
+  /** Set the AI foreground mask (subject cutout, alpha = foreground). null clears it. */
+  setMask(bitmap: ImageBitmap | null): void;
   /** PNG keeps transparency; JPG flattens transparent bg onto bgColor;
    *  SVG traces the ink/background pixel boundary of the post-processed bitmap
    *  (including ink-bleed merging) into vector paths. */

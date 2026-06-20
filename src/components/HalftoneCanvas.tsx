@@ -8,6 +8,7 @@ import TextBoxEditor from './TextBoxEditor';
 interface Props {
   params: HalftoneParams;
   imageUrl: string | null;
+  mask: ImageBitmap | null;
   registerExport: (fn: (format: ExportFormat) => void) => void;
   loadFile: (file: File) => void;
   onRemove: () => void;
@@ -17,7 +18,7 @@ interface Props {
 }
 
 export default function HalftoneCanvas({
-  params, imageUrl, registerExport, loadFile, onRemove,
+  params, imageUrl, mask, registerExport, loadFile, onRemove,
   fontInfo, loadFont, onTextBoxChange,
 }: Props) {
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -38,6 +39,7 @@ export default function HalftoneCanvas({
       // Apply current params and image immediately after creation
       handle.setParams(params);
       if (imageUrl) handle.setImage(imageUrl);
+      if (mask) handle.setMask(mask);
     });
 
     return () => {
@@ -62,6 +64,11 @@ export default function HalftoneCanvas({
       handleRef.current?.clearImage();
     }
   }, [imageUrl]);
+
+  // Sync AI foreground mask changes
+  useEffect(() => {
+    handleRef.current?.setMask(mask);
+  }, [mask]);
 
   // Register export callback with parent
   useEffect(() => {
