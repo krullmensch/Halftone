@@ -452,6 +452,33 @@ export function createSketch(container: HTMLElement): SketchHandle {
   }
 
   /**
+   * Render the loaded image cover-fitted into a cw×ch RGBA buffer, optionally
+   * Gaussian-blurred by `blurPx`. Used by image-mask mode to produce the sharp
+   * (inside-dots) and blurred (background) layers. Returns the pixel data.
+   */
+  function renderCoverImage(blurPx: number, params: HalftoneParams): Uint8ClampedArray {
+    const tmp = document.createElement('canvas');
+    tmp.width = cw;
+    tmp.height = ch;
+    const ctx = tmp.getContext('2d')!;
+    if (!params.transparentBg) {
+      ctx.fillStyle = params.bgColor;
+      ctx.fillRect(0, 0, cw, ch);
+    }
+    if (loadedImage) {
+      const { dx, dy, dw, dh } = coverFit(loadedImage.width, loadedImage.height);
+      const useFilter = canvasBlurSupported();
+      if (blurPx > 0 && useFilter) ctx.filter = `blur(${blurPx}px)`;
+      ctx.drawImage((loadedImage as any).canvas, dx, dy, dw, dh);
+      if (blurPx > 0 && useFilter) ctx.filter = 'none';
+      const id = ctx.getImageData(0, 0, cw, ch);
+      if (blurPx > 0 && !useFilter) gaussianBlur(id.data, cw, ch, blurPx);
+      return id.data;
+    }
+    return ctx.getImageData(0, 0, cw, ch).data;
+  }
+
+  /**
    * Draw the foreground mask into maskPg using the same cover-fit transform as
    * the source image, so mask alpha at (x,y) corresponds to the sampled pixel.
    * Areas outside the mask stay alpha 0 (treated as background).
@@ -558,6 +585,36 @@ export function createSketch(container: HTMLElement): SketchHandle {
       // No blur: read pg pixels directly (dots are anti-aliased by p5 already)
       const pgCtxRead = (pg as any).drawingContext as CanvasRenderingContext2D;
       imgData = pgCtxRead.getImageData(0, 0, w, h);
+    }
+
+    // Image-mask mode: the halftone dots are a window onto the (blurred)
+    // underlying image — ink coverage shows the blurred image, everything else
+    // is the background color (or transparent if selected).
+    if (params.imageMask && currentParams.mode === 'image' && loadedImage) {
+      // bgColor: false → don't fill bg in the layer; we composite it ourselves
+      const img = renderCoverImage(params.bgBlur * renderScale(), { ...params, transparentBg: true });
+      const bg = parseHex(bgColor);
+      const d = imgData.data;
+      for (let i = 0; i < d.length; i += 4) {
+        // pg holds black dots (0) on white (255): ink coverage = 1 - v
+        const cov = 1 - d[i] / 255;
+        if (transparentBg) {
+          // Image inside dots, transparent outside
+          d[i]     = img[i];
+          d[i + 1] = img[i + 1];
+          d[i + 2] = img[i + 2];
+          d[i + 3] = Math.round(cov * 255);
+        } else {
+          // Image inside dots, bgColor outside
+          d[i]     = Math.round(img[i]     * cov + bg.r * (1 - cov));
+          d[i + 1] = Math.round(img[i + 1] * cov + bg.g * (1 - cov));
+          d[i + 2] = Math.round(img[i + 2] * cov + bg.b * (1 - cov));
+          d[i + 3] = 255;
+        }
+      }
+      const pgCtx0 = (pg as any).drawingContext as CanvasRenderingContext2D;
+      pgCtx0.putImageData(imgData, 0, 0);
+      return;
     }
 
     // Colorize pass

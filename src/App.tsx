@@ -19,6 +19,7 @@ export default function App() {
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [maskBitmap, setMaskBitmap] = useState<ImageBitmap | null>(null);
   const [maskLoading, setMaskLoading] = useState(false);
+  const [maskProgress, setMaskProgress] = useState<number | null>(null);
   const maskCacheUrl = useRef<string | null>(null);
   const [fontInfo, setFontInfo] = useState<FontInfo | null>(null);
   const [cropOpen, setCropOpen] = useState(false);
@@ -48,10 +49,15 @@ export default function App() {
 
     let cancelled = false;
     setMaskLoading(true);
+    setMaskProgress(0);
     (async () => {
       try {
         const imgly = await import('@imgly/background-removal');
-        const blob = await imgly.removeBackground(imageUrl);
+        const blob = await imgly.removeBackground(imageUrl, {
+          progress: (_key, current, total) => {
+            if (!cancelled && total > 0) setMaskProgress(current / total);
+          },
+        });
         const bmp = await createImageBitmap(blob);
         if (cancelled) { bmp.close?.(); return; }
         maskCacheUrl.current = imageUrl;
@@ -59,7 +65,10 @@ export default function App() {
       } catch (e) {
         if (!cancelled) console.warn('[mask] background removal failed', e);
       } finally {
-        if (!cancelled) setMaskLoading(false);
+        if (!cancelled) {
+          setMaskLoading(false);
+          setMaskProgress(null);
+        }
       }
     })();
     return () => { cancelled = true; };
@@ -200,6 +209,7 @@ export default function App() {
           onOpenCrop={() => setCropOpen(true)}
           hasImage={!!imageUrl}
           maskLoading={maskLoading}
+          maskProgress={maskProgress}
           fontInfo={fontInfo}
           loadFont={loadFont}
         />
