@@ -11,12 +11,13 @@ interface Props {
   onOpenCrop: () => void;
   hasImage: boolean;
   maskLoading: boolean;
+  maskProgress: number | null;
   fontInfo: FontInfo | null;
   loadFont: (file: File) => void;
 }
 
 export default function ControlSidebar({
-  params, onChange, onExport, onOpenCrop, hasImage, maskLoading, fontInfo, loadFont,
+  params, onChange, onExport, onOpenCrop, hasImage, maskLoading, maskProgress, fontInfo, loadFont,
 }: Props) {
   const fontInputRef = useRef<HTMLInputElement>(null);
 
@@ -283,9 +284,23 @@ export default function ControlSidebar({
               />
               <label htmlFor="remove-bg" className="control-label checkbox-label">
                 Hintergrund entfernen (KI)
-                {maskLoading && ' — berechne Maske…'}
               </label>
             </div>
+            {maskLoading && (
+              <div className="mask-progress">
+                <div className="mask-progress__bar">
+                  <div
+                    className="mask-progress__fill"
+                    style={{ width: `${Math.round((maskProgress ?? 0) * 100)}%` }}
+                  />
+                </div>
+                <span className="mask-progress__label">
+                  {maskProgress === null
+                    ? 'Modell wird geladen…'
+                    : `${Math.round(maskProgress * 100)}%`}
+                </span>
+              </div>
+            )}
           </div>
 
           {params.removeBackground && (
@@ -339,6 +354,38 @@ export default function ControlSidebar({
         onChange={v => set('inkBleed', v)}
         decimals={1}
       />
+
+      {/* Image-mask mode — image only */}
+      {!isText && (
+        <>
+          <div className="control-group">
+            <div className="checkbox-row">
+              <input
+                type="checkbox"
+                id="image-mask"
+                checked={params.imageMask}
+                onChange={e => set('imageMask', e.target.checked)}
+                className="checkbox-input"
+              />
+              <label htmlFor="image-mask" className="control-label checkbox-label">
+                Punkte als Maske über Bild
+              </label>
+            </div>
+          </div>
+
+          {params.imageMask && (
+            <SliderControl
+              label="Hintergrund-Blur"
+              value={params.bgBlur}
+              min={0}
+              max={50}
+              step={1}
+              onChange={v => set('bgBlur', v)}
+              unit="px"
+            />
+          )}
+        </>
+      )}
 
       {/* Colors section */}
       <div className="control-section-label">Colors</div>

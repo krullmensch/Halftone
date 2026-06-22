@@ -64,6 +64,13 @@ export interface HalftoneParams {
   removeBackground: boolean;
   /** Foreground-mask alpha cutoff 0–255; dots are kept only where mask alpha ≥ this */
   bgThreshold: number;
+  /** If true, halftone dots act as a mask revealing the real image instead of
+   *  being filled with dotColor. Outside the dots shows the (optionally blurred)
+   *  underlying image. Image mode only. */
+  imageMask: boolean;
+  /** Gaussian blur (px) applied to the underlying background image shown
+   *  outside the dots when imageMask is on (0–50). */
+  bgBlur: number;
   /** Luminance threshold 0–255; dots are only drawn where luminance < threshold */
   halftoneThreshold: number;
   /** Minimum dot size in px */
@@ -120,6 +127,8 @@ export const DEFAULT_PARAMS: HalftoneParams = {
   noiseAmount: 0,
   removeBackground: false,
   bgThreshold: 128,
+  imageMask: false,
+  bgBlur: 12,
   halftoneThreshold: 159,
   minDotSize: 0,
   maxDotSize: 20,

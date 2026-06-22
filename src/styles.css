@@ -385,6 +385,39 @@ body {
   cursor: pointer;
 }
 
+/* ── Mask progress bar ───────────────────────────────────────── */
+
+.mask-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.mask-progress__bar {
+  flex: 1;
+  height: 6px;
+  background: var(--border, #333);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.mask-progress__fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 0.2s ease;
+}
+
+.mask-progress__label {
+  font-size: 11px;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  min-width: 38px;
+  text-align: right;
+}
+
 /* ── Position button ─────────────────────────────────────────── */
 
 .position-btn {
