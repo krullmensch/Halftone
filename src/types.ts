@@ -4,8 +4,8 @@ export type GridType = 'regular' | 'benday';
  *  DIN formats use the A-series 1:√2 ratio, 'square' is 1:1. */
 export type CanvasFormat = 'auto' | 'din-portrait' | 'din-landscape' | 'square';
 
-/** Source mode: halftone an uploaded image, or rendered text. */
-export type CanvasMode = 'image' | 'text';
+/** Source mode: halftone an uploaded image, rendered text, or video frames. */
+export type CanvasMode = 'image' | 'text' | 'video';
 
 export type TextAlign = 'left' | 'center' | 'right';
 
@@ -36,6 +36,79 @@ export interface TextBox {
   y: number;
   w: number;
   h: number;
+}
+
+// ── Video mode ─────────────────────────────────────────────────────────────
+
+/** Clip source kind: a video file, or a still image shown for a set duration. */
+export type ClipSourceType = 'video' | 'still';
+
+/** One clip in the single-track video timeline. */
+export interface VideoClip {
+  id: string;
+  type: ClipSourceType;
+  /** Object URL of the original file (video) or decoded image (still; TIFF is
+   *  pre-decoded to a canvas-derived URL on import). */
+  src: string;
+  /** Original file name, shown in the timeline UI */
+  fileName: string;
+  /** Natural duration in seconds (video) or user-set display duration (still) */
+  duration: number;
+  /** Trim in-point in seconds (0 for stills) */
+  inPoint: number;
+  /** Trim out-point in seconds (=== duration for untrimmed clips) */
+  outPoint: number;
+  /** Natural pixel dimensions of the source */
+  width: number;
+  height: number;
+  /** Thumbnail data URL for the timeline strip */
+  thumbnail?: string;
+}
+
+export type TransitionType = 'none' | 'crossfade' | 'dip-to-color' | 'wipe';
+
+export type WipeDirection = 'left' | 'right' | 'up' | 'down';
+
+/** Transition between two adjacent clips (occupies tail of A / head of B). */
+export interface ClipTransition {
+  type: TransitionType;
+  /** Duration in seconds, clamped to min(tail of A, head of B) at evaluation */
+  duration: number;
+  /** 'dip-to-color' only */
+  color?: string;
+  /** 'wipe' only */
+  direction?: WipeDirection;
+}
+
+/** Single-track timeline. transitions[i] sits between clips[i] and clips[i+1]. */
+export interface VideoTimelineData {
+  clips: VideoClip[];
+  transitions: ClipTransition[];
+}
+
+export type VideoContainer = 'mp4' | 'mov' | 'webm';
+export type VideoCodec = 'h264' | 'h265' | 'vp8' | 'vp9' | 'av1';
+
+export interface VideoExportSettings {
+  container: VideoContainer;
+  codec: VideoCodec;
+  fps: number;
+  /** Longest output side in px */
+  resolution: number;
+  /** Target bitrate in bps (optional override; a default is derived from resolution/fps) */
+  bitrate?: number;
+}
+
+/** How a transition frame is composited from two source frames (t = 0..1). */
+export interface FrameMix {
+  other: CanvasImageSource;
+  /** Other frame's natural size (VideoFrame/ImageBitmap don't expose width/height uniformly) */
+  otherWidth: number;
+  otherHeight: number;
+  t: number;
+  type: TransitionType;
+  color?: string;
+  direction?: WipeDirection;
 }
 
 export interface HalftoneParams {
@@ -112,6 +185,12 @@ export interface HalftoneParams {
   fontAxes: Record<string, number>;
   /** Normalized 0–1 text box rect within the canvas */
   textBox: TextBox;
+
+  // ── Video mode ─────────────────────────────────────────────────────────
+  /** Aspect ratio (w/h) of the current video clip, drives canvas dims in
+   *  'auto' format. Updated by the playback engine when the active clip
+   *  changes; 16/9 until a clip is loaded. */
+  videoAspect: number;
 }
 
 export const DEFAULT_PARAMS: HalftoneParams = {
@@ -147,6 +226,7 @@ export const DEFAULT_PARAMS: HalftoneParams = {
   textAlign: 'center',
   fontAxes: {},
   textBox: { x: 0.08, y: 0.08, w: 0.84, h: 0.84 },
+  videoAspect: 16 / 9,
 };
 
 export type ExportFormat = 'png' | 'jpg' | 'svg';
@@ -164,5 +244,26 @@ export interface SketchHandle {
    *  SVG traces the ink/background pixel boundary of the post-processed bitmap
    *  (including ink-bleed merging) into vector paths. */
   exportImage(format: ExportFormat): void | Promise<void>;
+  /** Video mode: composite a source frame (plus optional transition mix) into
+   *  the src buffer and redraw the halftone. Caller drives the frame cadence. */
+  setVideoFrame(
+    frame: CanvasImageSource,
+    frameW: number,
+    frameH: number,
+    mix?: FrameMix,
+  ): void;
+  /** Enter full-resolution rendering for a video export session. Recreates
+   *  buffers once; renderVideoFrame calls between begin/end reuse them. */
+  beginVideoExport(): Promise<void>;
+  /** Leave full-resolution mode and restore the preview canvas. */
+  endVideoExport(): void;
+  /** Video export: render one frame (at full res inside a begin/endVideoExport
+   *  session) and return the composited canvas for encoding. */
+  renderVideoFrame(
+    frame: CanvasImageSource,
+    frameW: number,
+    frameH: number,
+    mix?: FrameMix,
+  ): Promise<HTMLCanvasElement>;
   destroy(): void;
 }

@@ -885,3 +885,351 @@ body {
     font-size: 18px;
   }
 }
+
+/* ── Video tab ── */
+
+/* Playback controls */
+
+.vpc-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  width: 100%;
+}
+
+.vpc-play-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.vpc-play-btn:hover {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+.vpc-time {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.vpc-seek {
+  flex: 1;
+}
+
+/* Timeline */
+
+.vtl-root {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.vtl-ruler {
+  position: relative;
+  height: 14px;
+  min-width: 100%;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+
+.vtl-playhead {
+  position: absolute;
+  top: 0;
+  bottom: -4px;
+  width: 1px;
+  background: var(--accent);
+  pointer-events: none;
+  z-index: 5;
+}
+
+.vtl-strip {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-height: 56px;
+  padding: 6px 0;
+}
+
+.vtl-clip-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.vtl-clip {
+  position: relative;
+  height: 48px;
+  min-width: 56px;
+  background-color: #1a1a1a;
+  background-size: cover;
+  background-position: center;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.vtl-clip-name {
+  position: absolute;
+  left: 4px;
+  bottom: 3px;
+  right: 4px;
+  font-size: 10px;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.vtl-remove-btn {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.7);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  z-index: 2;
+}
+
+.vtl-remove-btn:hover {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+.vtl-trim-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  background: rgba(255, 255, 255, 0.25);
+  cursor: ew-resize;
+  touch-action: none;
+  z-index: 1;
+}
+
+.vtl-trim-handle--in {
+  left: 0;
+}
+
+.vtl-trim-handle--out {
+  right: 0;
+}
+
+.vtl-trim-handle:hover {
+  background: var(--accent);
+}
+
+.vtl-still-duration {
+  position: absolute;
+  left: 4px;
+  top: 3px;
+  padding: 1px 5px;
+  background: rgba(0, 0, 0, 0.7);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  cursor: text;
+  z-index: 2;
+}
+
+.vtl-still-duration-input {
+  position: absolute;
+  left: 4px;
+  top: 3px;
+  width: 44px;
+  font-size: 10px;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  padding: 1px 3px;
+  outline: none;
+  z-index: 2;
+}
+
+.vtl-drop-indicator {
+  width: 2px;
+  align-self: stretch;
+  background: var(--accent);
+  border-radius: 1px;
+  flex-shrink: 0;
+}
+
+.vtl-transition-slot {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  flex-shrink: 0;
+}
+
+.vtl-transition-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.vtl-transition-btn:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.vtl-transition-btn--active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg);
+}
+
+.vtl-transition-popover {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-bottom: 8px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 200px;
+  background: #000;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+/* Export dialog */
+
+.vex-panel {
+  width: 360px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  background: #000;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px;
+}
+
+.vex-codec-group {
+  align-items: stretch;
+}
+
+.vex-codec-option {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.vex-codec-option .toggle-btn {
+  width: 100%;
+}
+
+.vex-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.vex-badge--hw {
+  background: #1e5c2e;
+  border-color: #2e8b46;
+  color: #a8f0b8;
+}
+
+.vex-badge--sw {
+  background: #6b5a12;
+  border-color: #a8891c;
+  color: #f0dfa0;
+}
+
+.vex-badge--none {
+  opacity: 0.5;
+}
+
+.vex-progress-text {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: -6px;
+}
+
+.vex-cancel-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+
+.vex-cancel-btn:hover {
+  background: var(--border);
+  color: var(--bg);
+}
+
+/* Video mode: stack canvas above playback controls and timeline */
+.canvas-area--video {
+  flex-direction: column;
+  gap: 12px;
+  padding-bottom: 16px;
+}
+
+.canvas-area--video .canvas-wrapper {
+  flex: 1;
+  min-height: 0;
+}
+
+.canvas-area--video .vpc-root,
+.canvas-area--video .vtl-root {
+  flex: 0 0 auto;
+  width: calc(100% - 48px);
+  max-width: 1100px;
+}

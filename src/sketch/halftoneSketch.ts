@@ -1,5 +1,5 @@
 import p5 from 'p5';
-import type { HalftoneParams, ExportFormat, SketchHandle } from '../types';
+import type { HalftoneParams, ExportFormat, SketchHandle, FrameMix } from '../types';
 import { DEFAULT_PARAMS } from '../types';
 
 /** Longest canvas side while preview mode is active. */
@@ -235,6 +235,13 @@ export function createSketch(container: HTMLElement): SketchHandle {
   // Forces full-resolution rendering during exports even when preview is on
   let exportFullRes = false;
 
+  // Last video frame pushed via setVideoFrame, retained so param changes can
+  // re-composite without a new frame. HTMLVideoElement sources stay drawable;
+  // still sources are persistent ImageBitmaps.
+  let lastVideoFrame: {
+    frame: CanvasImageSource; w: number; h: number; mix?: FrameMix;
+  } | null = null;
+
   // Current canvas / buffer dimensions (longest side = canvasSize, aspect-correct)
   let cw = currentParams.canvasSize;
   let ch = currentParams.canvasSize;
@@ -280,6 +287,9 @@ export function createSketch(container: HTMLElement): SketchHandle {
     if (currentParams.mode === 'text') {
       return !!currentParams.fontFamily && currentParams.text.length > 0;
     }
+    if (currentParams.mode === 'video') {
+      return lastVideoFrame !== null;
+    }
     return !!loadedImage;
   }
 
@@ -317,6 +327,14 @@ export function createSketch(container: HTMLElement): SketchHandle {
     }
     if (fmt === 'square') {
       return { w: size, h: size };
+    }
+    // 'auto' in video mode: follow the active clip's aspect ratio
+    if (currentParams.mode === 'video') {
+      const a = currentParams.videoAspect || 16 / 9;
+      if (a >= 1) {
+        return { w: size, h: Math.max(1, Math.round(size / a)) };
+      }
+      return { w: Math.max(1, Math.round(size * a)), h: size };
     }
     // 'auto': follow image aspect, square if no image
     if (!loadedImage) return { w: size, h: size };
@@ -493,29 +511,17 @@ export function createSketch(container: HTMLElement): SketchHandle {
     maskPg.loadPixels();
   }
 
-  function rebuildSrc(): void {
-    if (currentParams.mode === 'text') {
-      renderText();
-      return;
-    }
-    if (!loadedImage || !src) return;
+  /**
+   * Post-draw source filters shared by the image and video-frame paths:
+   * fallback Gaussian pre-blur (browsers without canvas filter support) and
+   * luminance grain. The native-filter blur path is applied at draw time by
+   * the caller via ctx.filter.
+   */
+  function applySourceFilters(ctx: CanvasRenderingContext2D): void {
     const { preBlur, noiseAmount } = currentParams;
     const scale = renderScale();
 
-    src.clear();
-    src.background(255);
-
-    const ctx = (src as any).drawingContext as CanvasRenderingContext2D;
-    const imgW = loadedImage.width;
-    const imgH = loadedImage.height;
-    const { dx, dy, dw, dh } = coverFit(imgW, imgH);
-    const useFilter = canvasBlurSupported();
-    if (preBlur > 0 && useFilter) ctx.filter = `blur(${preBlur * scale}px)`;
-    src.image(loadedImage, dx, dy, dw, dh);
-    if (preBlur > 0 && useFilter) ctx.filter = 'none';
-
-    // Fallback blur for browsers without canvas filter support (e.g. iOS Safari)
-    if (preBlur > 0 && !useFilter) {
+    if (preBlur > 0 && !canvasBlurSupported()) {
       const id = ctx.getImageData(0, 0, cw, ch);
       gaussianBlur(id.data, cw, ch, preBlur * scale);
       ctx.putImageData(id, 0, 0);
@@ -533,7 +539,129 @@ export function createSketch(container: HTMLElement): SketchHandle {
       }
       ctx.putImageData(imgData, 0, 0);
     }
+  }
 
+  /** Cover-fit draw of one frame into the src context. */
+  function drawFrameCover(
+    ctx: CanvasRenderingContext2D,
+    frame: CanvasImageSource, fw: number, fh: number,
+  ): void {
+    const { dx, dy, dw, dh } = coverFit(fw, fh);
+    ctx.drawImage(frame, dx, dy, dw, dh);
+  }
+
+  /**
+   * Composite a transition frame from two sources BEFORE halftone sampling —
+   * the blended result is a single valid halftone target, so the dot grid
+   * morphs cleanly instead of two dot patterns cross-fading over each other.
+   */
+  function drawTransitionBlend(
+    ctx: CanvasRenderingContext2D,
+    frame: CanvasImageSource, fw: number, fh: number,
+    mix: FrameMix,
+  ): void {
+    const t = Math.max(0, Math.min(1, mix.t));
+
+    if (mix.type === 'wipe') {
+      drawFrameCover(ctx, frame, fw, fh);
+      ctx.save();
+      ctx.beginPath();
+      const dir = mix.direction ?? 'left';
+      if (dir === 'left') ctx.rect(0, 0, cw * t, ch);
+      else if (dir === 'right') ctx.rect(cw * (1 - t), 0, cw * t, ch);
+      else if (dir === 'up') ctx.rect(0, 0, cw, ch * t);
+      else ctx.rect(0, ch * (1 - t), cw, ch * t);
+      ctx.clip();
+      drawFrameCover(ctx, mix.other, mix.otherWidth, mix.otherHeight);
+      ctx.restore();
+      return;
+    }
+
+    if (mix.type === 'dip-to-color') {
+      const color = mix.color ?? '#000000';
+      if (t < 0.5) {
+        drawFrameCover(ctx, frame, fw, fh);
+        ctx.save();
+        ctx.globalAlpha = t * 2;
+        ctx.fillStyle = color;
+        ctx.fillRect(0, 0, cw, ch);
+        ctx.restore();
+      } else {
+        drawFrameCover(ctx, mix.other, mix.otherWidth, mix.otherHeight);
+        ctx.save();
+        ctx.globalAlpha = (1 - t) * 2;
+        ctx.fillStyle = color;
+        ctx.fillRect(0, 0, cw, ch);
+        ctx.restore();
+      }
+      return;
+    }
+
+    // crossfade (default)
+    drawFrameCover(ctx, frame, fw, fh);
+    ctx.save();
+    ctx.globalAlpha = t;
+    drawFrameCover(ctx, mix.other, mix.otherWidth, mix.otherHeight);
+    ctx.restore();
+  }
+
+  /**
+   * Video path parallel to rebuildSrc: composite the given frame (plus
+   * optional transition mix) into the src buffer without p5.loadImage.
+   */
+  function rebuildSrcFromFrame(
+    frame: CanvasImageSource, fw: number, fh: number, mix?: FrameMix,
+  ): void {
+    if (!src) return;
+    const { preBlur } = currentParams;
+    const scale = renderScale();
+
+    src.clear();
+    src.background(255);
+
+    const ctx = (src as any).drawingContext as CanvasRenderingContext2D;
+    const useFilter = canvasBlurSupported();
+    if (preBlur > 0 && useFilter) ctx.filter = `blur(${preBlur * scale}px)`;
+    if (mix && mix.type !== 'none') {
+      drawTransitionBlend(ctx, frame, fw, fh, mix);
+    } else {
+      drawFrameCover(ctx, frame, fw, fh);
+    }
+    if (preBlur > 0 && useFilter) ctx.filter = 'none';
+
+    applySourceFilters(ctx);
+    src.loadPixels();
+  }
+
+  function rebuildSrc(): void {
+    if (currentParams.mode === 'text') {
+      renderText();
+      return;
+    }
+    if (currentParams.mode === 'video') {
+      if (lastVideoFrame) {
+        const { frame, w, h, mix } = lastVideoFrame;
+        rebuildSrcFromFrame(frame, w, h, mix);
+      }
+      return;
+    }
+    if (!loadedImage || !src) return;
+    const { preBlur } = currentParams;
+    const scale = renderScale();
+
+    src.clear();
+    src.background(255);
+
+    const ctx = (src as any).drawingContext as CanvasRenderingContext2D;
+    const imgW = loadedImage.width;
+    const imgH = loadedImage.height;
+    const { dx, dy, dw, dh } = coverFit(imgW, imgH);
+    const useFilter = canvasBlurSupported();
+    if (preBlur > 0 && useFilter) ctx.filter = `blur(${preBlur * scale}px)`;
+    src.image(loadedImage, dx, dy, dw, dh);
+    if (preBlur > 0 && useFilter) ctx.filter = 'none';
+
+    applySourceFilters(ctx);
     src.loadPixels();
     rebuildMask();
   }
@@ -769,7 +897,8 @@ export function createSketch(container: HTMLElement): SketchHandle {
       params.canvasFormat !== prev.canvasFormat ||
       params.mode !== prev.mode ||
       params.canvasWidth !== prev.canvasWidth ||
-      params.canvasHeight !== prev.canvasHeight;
+      params.canvasHeight !== prev.canvasHeight ||
+      params.videoAspect !== prev.videoAspect;
     const srcChanged =
       params.preBlur !== prev.preBlur ||
       params.noiseAmount !== prev.noiseAmount ||
@@ -820,6 +949,46 @@ export function createSketch(container: HTMLElement): SketchHandle {
     foregroundMask = bitmap;
     rebuildMask();
     p5Instance.redraw();
+  }
+
+  function setVideoFrame(
+    frame: CanvasImageSource, frameW: number, frameH: number, mix?: FrameMix,
+  ): void {
+    if (currentParams.mode !== 'video') return;
+    const hadContent = lastVideoFrame !== null;
+    lastVideoFrame = { frame, w: frameW, h: frameH, mix };
+    // First frame after an empty state: canvas may still be sized for "no
+    // content" — apply dims before compositing.
+    if (!hadContent) applyCanvasSize(p5Instance);
+    rebuildSrcFromFrame(frame, frameW, frameH, mix);
+    p5Instance.redraw();
+  }
+
+  async function beginVideoExport(): Promise<void> {
+    if (exportFullRes) return;
+    exportFullRes = true;
+    applyCanvasSize(p5Instance);
+    // Buffers were recreated; wait a frame so p5 settles before first render.
+    await new Promise<void>(r => requestAnimationFrame(() => r()));
+  }
+
+  function endVideoExport(): void {
+    if (!exportFullRes) return;
+    exportFullRes = false;
+    applyCanvasSize(p5Instance);
+    rebuildSrc();
+    p5Instance.redraw();
+  }
+
+  async function renderVideoFrame(
+    frame: CanvasImageSource, frameW: number, frameH: number, mix?: FrameMix,
+  ): Promise<HTMLCanvasElement> {
+    lastVideoFrame = { frame, w: frameW, h: frameH, mix };
+    rebuildSrcFromFrame(frame, frameW, frameH, mix);
+    p5Instance.redraw();
+    // p5 2.x does not guarantee the redraw has flushed before the next line.
+    await new Promise<void>(r => requestAnimationFrame(() => r()));
+    return (p5Instance as any).canvas as HTMLCanvasElement;
   }
 
   async function exportImage(format: ExportFormat): Promise<void> {
@@ -934,5 +1103,9 @@ export function createSketch(container: HTMLElement): SketchHandle {
     p5Instance.remove();
   }
 
-  return { setParams, setImage, clearImage, setMask, exportImage, destroy };
+  return {
+    setParams, setImage, clearImage, setMask, exportImage,
+    setVideoFrame, beginVideoExport, endVideoExport, renderVideoFrame,
+    destroy,
+  };
 }

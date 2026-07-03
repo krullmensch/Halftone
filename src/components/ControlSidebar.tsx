@@ -9,6 +9,8 @@ interface Props {
   onChange: (params: HalftoneParams) => void;
   onExport: (format: ExportFormat) => void;
   onOpenCrop: () => void;
+  onOpenVideoExport: () => void;
+  hasVideoClips: boolean;
   hasImage: boolean;
   maskLoading: boolean;
   maskProgress: number | null;
@@ -17,7 +19,8 @@ interface Props {
 }
 
 export default function ControlSidebar({
-  params, onChange, onExport, onOpenCrop, hasImage, maskLoading, maskProgress, fontInfo, loadFont,
+  params, onChange, onExport, onOpenCrop, onOpenVideoExport, hasVideoClips,
+  hasImage, maskLoading, maskProgress, fontInfo, loadFont,
 }: Props) {
   const fontInputRef = useRef<HTMLInputElement>(null);
 
@@ -26,6 +29,8 @@ export default function ControlSidebar({
   }
 
   const isText = params.mode === 'text';
+  const isImage = params.mode === 'image';
+  const isVideo = params.mode === 'video';
 
   return (
     <div className="sidebar-inner">
@@ -33,7 +38,7 @@ export default function ControlSidebar({
 
       <div className="tab-group">
         <button
-          className={`tab-btn${!isText ? ' active' : ''}`}
+          className={`tab-btn${isImage ? ' active' : ''}`}
           onClick={() => set('mode', 'image')}
         >
           Bild
@@ -43,6 +48,12 @@ export default function ControlSidebar({
           onClick={() => set('mode', 'text')}
         >
           Text
+        </button>
+        <button
+          className={`tab-btn${isVideo ? ' active' : ''}`}
+          onClick={() => set('mode', 'video')}
+        >
+          Video
         </button>
       </div>
 
@@ -80,7 +91,7 @@ export default function ControlSidebar({
             </div>
           </div>
 
-          {params.canvasFormat !== 'auto' && hasImage && (
+          {params.canvasFormat !== 'auto' && hasImage && isImage && (
             <button className="position-btn" onClick={onOpenCrop}>
               Bild positionieren…
             </button>
@@ -272,7 +283,12 @@ export default function ControlSidebar({
             step={1}
             onChange={v => set('noiseAmount', v)}
           />
+        </>
+      )}
 
+      {/* AI background removal needs a single loaded image — image mode only */}
+      {isImage && (
+        <>
           <div className="control-group">
             <div className="checkbox-row">
               <input
@@ -356,7 +372,7 @@ export default function ControlSidebar({
       />
 
       {/* Image-mask mode — image only */}
-      {!isText && (
+      {isImage && (
         <>
           <div className="control-group">
             <div className="checkbox-row">
@@ -417,11 +433,23 @@ export default function ControlSidebar({
       </div>
 
       {/* Export buttons */}
-      <div className="export-row">
-        <button className="export-btn" onClick={() => onExport('png')}>PNG</button>
-        <button className="export-btn" onClick={() => onExport('jpg')}>JPG</button>
-        <button className="export-btn" onClick={() => onExport('svg')}>SVG</button>
-      </div>
+      {isVideo ? (
+        <div className="export-row">
+          <button
+            className="export-btn"
+            onClick={onOpenVideoExport}
+            disabled={!hasVideoClips}
+          >
+            Video exportieren…
+          </button>
+        </div>
+      ) : (
+        <div className="export-row">
+          <button className="export-btn" onClick={() => onExport('png')}>PNG</button>
+          <button className="export-btn" onClick={() => onExport('jpg')}>JPG</button>
+          <button className="export-btn" onClick={() => onExport('svg')}>SVG</button>
+        </div>
+      )}
     </div>
   );
 }

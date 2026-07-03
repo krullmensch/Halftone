@@ -1,9 +1,17 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { HalftoneParams, DEFAULT_PARAMS, ExportFormat, FontInfo, FontAxis } from './types';
+import {
+  HalftoneParams, DEFAULT_PARAMS, ExportFormat, FontInfo, FontAxis,
+  SketchHandle, VideoTimelineData, VideoExportSettings, VideoCodec,
+  VideoContainer, ClipTransition,
+} from './types';
 import ControlSidebar from './components/ControlSidebar';
 import HalftoneCanvas from './components/HalftoneCanvas';
 import CropModal from './components/CropModal';
 import DropEffect, { DropEffectHandle } from './components/DropEffect';
+import VideoTimeline from './components/VideoTimeline';
+import VideoPlaybackControls from './components/VideoPlaybackControls';
+import VideoExportDialog from './components/VideoExportDialog';
+import type { PlaybackEngine } from './video/playbackEngine';
 
 function canvasAspect(format: HalftoneParams['canvasFormat']): number {
   switch (format) {
@@ -30,6 +38,228 @@ export default function App() {
   const objectUrlRef = useRef<string | null>(null);
   const dragDepth = useRef(0);
   const effectRef = useRef<DropEffectHandle>(null);
+
+  // ── Video mode state ─────────────────────────────────────────────────
+  const [videoTimeline, setVideoTimeline] = useState<VideoTimelineData>({
+    clips: [], transitions: [],
+  });
+  const [videoTime, setVideoTime] = useState(0);
+  const [videoDuration, setVideoDuration] = useState(0);
+  const [videoPlaying, setVideoPlaying] = useState(false);
+  const [videoExportOpen, setVideoExportOpen] = useState(false);
+  const [videoExporting, setVideoExporting] = useState(false);
+  const [videoExportProgress, setVideoExportProgress] = useState<number | null>(null);
+  const [videoExportLabel, setVideoExportLabel] = useState('');
+  const sketchRef = useRef<SketchHandle | null>(null);
+  const engineRef = useRef<PlaybackEngine | null>(null);
+  const timelineRef = useRef(videoTimeline);
+  const exportAbortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    timelineRef.current = videoTimeline;
+    let cancelled = false;
+    import('./video/timeline').then(m => {
+      if (!cancelled) setVideoDuration(m.timelineDuration(videoTimeline));
+    });
+    return () => { cancelled = true; };
+  }, [videoTimeline]);
+
+  // Canvas aspect follows the first clip (constant across the timeline so the
+  // canvas doesn't resize mid-playback).
+  useEffect(() => {
+    const first = videoTimeline.clips[0];
+    if (!first || !first.width || !first.height) return;
+    const aspect = first.width / first.height;
+    setParams(p => (p.videoAspect === aspect ? p : { ...p, videoAspect: aspect }));
+  }, [videoTimeline.clips]);
+
+  // Leaving video mode stops playback and releases the engine.
+  useEffect(() => {
+    if (params.mode === 'video') return;
+    engineRef.current?.dispose();
+    engineRef.current = null;
+    setVideoPlaying(false);
+  }, [params.mode]);
+
+  const registerSketch = useCallback((handle: SketchHandle | null) => {
+    sketchRef.current = handle;
+    if (!handle) {
+      engineRef.current?.dispose();
+      engineRef.current = null;
+    }
+  }, []);
+
+  const ensureEngine = useCallback(async (): Promise<PlaybackEngine | null> => {
+    if (engineRef.current) return engineRef.current;
+    const sketch = sketchRef.current;
+    if (!sketch) return null;
+    const { createPlaybackEngine } = await import('./video/playbackEngine');
+    // A mode switch may have disposed a concurrently created engine
+    if (engineRef.current) return engineRef.current;
+    const engine = createPlaybackEngine({
+      getTimeline: () => timelineRef.current,
+      sketch,
+      onTime: setVideoTime,
+      onEnded: () => setVideoPlaying(false),
+    });
+    engineRef.current = engine;
+    return engine;
+  }, []);
+
+  const handleVideoPlayPause = useCallback(async () => {
+    const engine = await ensureEngine();
+    if (!engine) return;
+    if (engine.isPlaying) {
+      engine.pause();
+      setVideoPlaying(false);
+    } else {
+      engine.play();
+      setVideoPlaying(true);
+    }
+  }, [ensureEngine]);
+
+  const handleVideoSeek = useCallback(async (t: number) => {
+    const engine = await ensureEngine();
+    if (!engine) return;
+    setVideoPlaying(false);
+    await engine.seek(t);
+  }, [ensureEngine]);
+
+  const addVideoFiles = useCallback(async (files: File[]) => {
+    const { fileToClip, isClipFile } = await import('./video/importClips');
+    for (const file of files) {
+      if (!isClipFile(file)) continue;
+      try {
+        const clip = await fileToClip(file);
+        setVideoTimeline(tl => ({
+          clips: [...tl.clips, clip],
+          transitions: tl.clips.length > 0
+            ? [...tl.transitions, { type: 'none', duration: 0.5 }]
+            : tl.transitions,
+        }));
+      } catch (e) {
+        console.warn('[video] import failed', e);
+        window.alert(e instanceof Error ? e.message : `Import fehlgeschlagen: ${file.name}`);
+      }
+    }
+  }, []);
+
+  const handleClipReorder = useCallback((from: number, to: number) => {
+    setVideoTimeline(tl => {
+      if (from === to || from < 0 || to < 0 || from >= tl.clips.length || to >= tl.clips.length) {
+        return tl;
+      }
+      const clips = [...tl.clips];
+      const [moved] = clips.splice(from, 1);
+      clips.splice(to, 0, moved);
+      // Transition assignments between pairs change — reset to safe defaults
+      // around the moved clip is complex; keep array length consistent.
+      const transitions = tl.transitions.slice(0, Math.max(0, clips.length - 1));
+      while (transitions.length < clips.length - 1) {
+        transitions.push({ type: 'none', duration: 0.5 });
+      }
+      return { clips, transitions };
+    });
+  }, []);
+
+  const handleClipTrim = useCallback((clipId: string, inPoint: number, outPoint: number) => {
+    setVideoTimeline(tl => ({
+      ...tl,
+      clips: tl.clips.map(c => (c.id === clipId ? { ...c, inPoint, outPoint } : c)),
+    }));
+  }, []);
+
+  const handleClipRemove = useCallback((clipId: string) => {
+    import('./video/frameSource').then(m => m.disposeFrameSource(clipId));
+    setVideoTimeline(tl => {
+      const idx = tl.clips.findIndex(c => c.id === clipId);
+      if (idx < 0) return tl;
+      const removed = tl.clips[idx];
+      URL.revokeObjectURL(removed.src);
+      const clips = tl.clips.filter(c => c.id !== clipId);
+      const transitions = [...tl.transitions];
+      // Remove the transition following the clip (or the previous one for the last clip)
+      transitions.splice(Math.min(idx, transitions.length - 1), 1);
+      return { clips, transitions: transitions.slice(0, Math.max(0, clips.length - 1)) };
+    });
+  }, []);
+
+  const handleSetTransition = useCallback((index: number, def: ClipTransition) => {
+    setVideoTimeline(tl => ({
+      ...tl,
+      transitions: tl.transitions.map((t, i) => (i === index ? def : t)),
+    }));
+  }, []);
+
+  const handleSetStillDuration = useCallback((clipId: string, seconds: number) => {
+    setVideoTimeline(tl => ({
+      ...tl,
+      clips: tl.clips.map(c =>
+        c.id === clipId && c.type === 'still'
+          ? { ...c, duration: seconds, outPoint: seconds, inPoint: 0 }
+          : c,
+      ),
+    }));
+  }, []);
+
+  const probeCodec = useCallback(async (
+    codec: VideoCodec, container: VideoContainer,
+  ): Promise<'hardware' | 'software' | 'unsupported'> => {
+    try {
+      const { detectEncodePath } = await import('./video/encoders/webcodecs');
+      const path = await detectEncodePath(codec, container, 1920, 1080, 30, 8_000_000);
+      if (path === 'webcodecs') return 'hardware';
+      if (path === 'ffmpeg') return 'software';
+      return 'unsupported';
+    } catch {
+      return 'unsupported';
+    }
+  }, []);
+
+  const handleVideoExport = useCallback(async (settings: VideoExportSettings) => {
+    const sketch = sketchRef.current;
+    if (!sketch || timelineRef.current.clips.length === 0) return;
+    engineRef.current?.pause();
+    setVideoPlaying(false);
+
+    const ac = new AbortController();
+    exportAbortRef.current = ac;
+    setVideoExporting(true);
+    setVideoExportProgress(0);
+    setVideoExportLabel('Vorbereiten…');
+    try {
+      const { exportVideo } = await import('./video/export');
+      await exportVideo({
+        timeline: timelineRef.current,
+        settings,
+        sketch,
+        signal: ac.signal,
+        onProgress: p => {
+          setVideoExportProgress(p.totalFrames > 0 ? p.framesDone / p.totalFrames : 0);
+          setVideoExportLabel(
+            p.phase === 'finalizing'
+              ? 'Datei wird erstellt…'
+              : `Frame ${p.framesDone}/${p.totalFrames}${p.software ? ' – Software-Encoding (ffmpeg)' : ' – Hardware'}`,
+          );
+        },
+      });
+      setVideoExportOpen(false);
+    } catch (e) {
+      if ((e as DOMException)?.name !== 'AbortError') {
+        console.error('[video] export failed', e);
+        window.alert('Video-Export fehlgeschlagen. Details in der Konsole.');
+      }
+    } finally {
+      setVideoExporting(false);
+      setVideoExportProgress(null);
+      setVideoExportLabel('');
+      exportAbortRef.current = null;
+    }
+  }, []);
+
+  const handleVideoExportCancel = useCallback(() => {
+    exportAbortRef.current?.abort();
+  }, []);
 
   // Compute the AI foreground mask once per image, lazily when background
   // removal is enabled. Cached by imageUrl so toggling/threshold stays cheap.
@@ -143,12 +373,16 @@ export default function App() {
     e.stopPropagation();
     dragDepth.current = 0;
     setDragging(false);
-    const file = e.dataTransfer.files?.[0];
-    if (!file) return;
-    loadFile(file);
+    const files = Array.from(e.dataTransfer.files ?? []);
+    if (files.length === 0) return;
+    if (params.mode === 'video') {
+      addVideoFiles(files);
+    } else {
+      loadFile(files[0]);
+    }
     setAbsorbing(true);
     window.setTimeout(() => setAbsorbing(false), 480);
-  }, [loadFile]);
+  }, [loadFile, addVideoFiles, params.mode]);
 
   const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -207,6 +441,8 @@ export default function App() {
           onChange={setParams}
           onExport={handleExport}
           onOpenCrop={() => setCropOpen(true)}
+          onOpenVideoExport={() => setVideoExportOpen(true)}
+          hasVideoClips={videoTimeline.clips.length > 0}
           hasImage={!!imageUrl}
           maskLoading={maskLoading}
           maskProgress={maskProgress}
@@ -214,23 +450,63 @@ export default function App() {
           loadFont={loadFont}
         />
       </aside>
-      <main className="canvas-area">
+      <main
+        className={`canvas-area${
+          params.mode === 'video' && videoTimeline.clips.length > 0 ? ' canvas-area--video' : ''
+        }`}
+      >
         <HalftoneCanvas
           params={params}
           imageUrl={imageUrl}
           mask={maskBitmap}
           registerExport={registerExport}
+          registerSketch={registerSketch}
           loadFile={loadFile}
           onRemove={handleRemoveImage}
           fontInfo={fontInfo}
           loadFont={loadFont}
           onTextBoxChange={box => setParams(p => ({ ...p, textBox: box }))}
+          hasVideoClips={videoTimeline.clips.length > 0}
+          onAddVideoFiles={addVideoFiles}
         />
+        {params.mode === 'video' && videoTimeline.clips.length > 0 && (
+          <>
+            <VideoPlaybackControls
+              isPlaying={videoPlaying}
+              currentTime={videoTime}
+              duration={videoDuration}
+              onPlayPause={handleVideoPlayPause}
+              onSeek={handleVideoSeek}
+            />
+            <VideoTimeline
+              timeline={videoTimeline}
+              currentTime={videoTime}
+              duration={videoDuration}
+              onSeek={handleVideoSeek}
+              onReorder={handleClipReorder}
+              onTrim={handleClipTrim}
+              onRemoveClip={handleClipRemove}
+              onSetTransition={handleSetTransition}
+              onSetStillDuration={handleSetStillDuration}
+            />
+          </>
+        )}
       </main>
       {(dragging || absorbing) && (
         <div className={`drop-overlay${absorbing ? ' drop-overlay--absorb' : ''}`}>
           <DropEffect ref={effectRef} />
         </div>
+      )}
+      {videoExportOpen && (
+        <VideoExportDialog
+          onClose={() => { if (!videoExporting) setVideoExportOpen(false); }}
+          onExport={handleVideoExport}
+          onCancel={handleVideoExportCancel}
+          exporting={videoExporting}
+          progress={videoExportProgress}
+          progressLabel={videoExportLabel}
+          probe={probeCodec}
+        />
       )}
       {cropOpen && imageUrl && (
         <CropModal
