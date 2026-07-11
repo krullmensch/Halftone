@@ -1,12 +1,22 @@
 {
-  "file_hashes": {},
-  "indexed_at_commit": "",
-  "indexed_at_timestamp": "2026-06-11T14:07:27.145457+00:00",
+  "file_hashes": {
+    "src/App.tsx": "d44682c6070b5edbb5c5ef97058b585c39be6b0deaed42639b960a7523de3cc8",
+    "src/components/ControlSidebar.tsx": "73cc38fdecf94bbbadc6177a687bdd18c1bb8a2795941ec59418741be309c833",
+    "src/components/HalftoneCanvas.tsx": "71d79efaef727bbf5c41704c97d785b1afc7fb9e2f8b06da4dd82af5c0114a83",
+    "src/esm-potrace-wasm.d.ts": "6849ff4c1e410257302f2dee9a81e512b5d629b4e62bf23b4edd0685a1766467",
+    "src/main.tsx": "ef0416398980fede465252938b968a3f8241a21481f478b7f9b625b783416980",
+    "src/sketch/halftoneSketch.ts": "e689ed79f0fe561612219aa03a0e991fefa3d44c10161a4641dfcd43d31a62f7",
+    "src/types.ts": "7cfa2880a7cdda25325d98d89387e866da29e10f461d367e1cd3a3912bbadb46",
+    "src/vite-env.d.ts": "00a29185efbdf41c38089c4164fb1b9415449bcd9eaa57c77623a12b55a50b6f",
+    "vite.config.ts": "3eeb7c810b4358a50443aadb8d0158e0c2216d3b62260f64e42754a24baec693"
+  },
+  "indexed_at_commit": "aac4d1026917bb7647ff71d3b0d82f0e3d6d3599",
+  "indexed_at_timestamp": "2026-06-11T17:47:26.166653+00:00",
   "schema_version": 3,
   "stats": {
-    "total_edges": 0,
-    "total_files": 0,
-    "total_nodes": 0
+    "total_edges": 10,
+    "total_files": 9,
+    "total_nodes": 12
   },
   "vexp_version": "1.2.29"
 }

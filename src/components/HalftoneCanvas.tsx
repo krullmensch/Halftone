@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { memo, useEffect, useRef } from 'react';
 import { HalftoneParams, ExportFormat, FontInfo, TextBox } from '../types';
 import type { SketchHandle } from '../types';
 import CanvasUpload from './CanvasUpload';
@@ -23,7 +23,7 @@ interface Props {
   onAddVideoFiles: (files: File[]) => void;
 }
 
-export default function HalftoneCanvas({
+function HalftoneCanvas({
   params, imageUrl, mask, registerExport, registerSketch, loadFile, onRemove,
   fontInfo, loadFont, onTextBoxChange, hasVideoClips, onAddVideoFiles,
 }: Props) {
@@ -119,3 +119,8 @@ export default function HalftoneCanvas({
     </div>
   );
 }
+
+// videoTime updates in App tick at ~4Hz while a video is playing; none of
+// this component's props change because of that, so memoizing it keeps the
+// p5 sketch subtree from re-rendering on every tick.
+export default memo(HalftoneCanvas);

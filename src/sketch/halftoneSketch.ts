@@ -1,9 +1,13 @@
 import p5 from 'p5';
-import type { HalftoneParams, ExportFormat, SketchHandle, FrameMix } from '../types';
+import type { HalftoneParams, ExportFormat, SketchHandle } from '../types';
 import { DEFAULT_PARAMS } from '../types';
 
 /** Longest canvas side while preview mode is active. */
 const PREVIEW_MAX = 1000;
+
+/** Default working resolution (longest side, px) for auto-aspect canvases:
+ *  image mode without an explicit crop/format, and video mode. */
+const AUTO_CANVAS_LONG = 2400;
 
 type Pt = { x: number; y: number };
 
@@ -239,12 +243,12 @@ export function createSketch(container: HTMLElement): SketchHandle {
   // re-composite without a new frame. HTMLVideoElement sources stay drawable;
   // still sources are persistent ImageBitmaps.
   let lastVideoFrame: {
-    frame: CanvasImageSource; w: number; h: number; mix?: FrameMix;
+    frame: CanvasImageSource; w: number; h: number;
   } | null = null;
 
-  // Current canvas / buffer dimensions (longest side = canvasSize, aspect-correct)
-  let cw = currentParams.canvasSize;
-  let ch = currentParams.canvasSize;
+  // Current canvas / buffer dimensions (aspect-correct; see computeDims)
+  let cw = currentParams.canvasWidth;
+  let ch = currentParams.canvasHeight;
 
   // Offscreen buffer holding the rendered halftone dots (pre-post-processing)
   let pg: p5.Graphics | null = null;
@@ -275,10 +279,17 @@ export function createSketch(container: HTMLElement): SketchHandle {
    */
   function renderScale(): number {
     if (exportFullRes || !currentParams.preview) return 1;
-    const longest =
-      currentParams.mode === 'text'
+    let longest: number;
+    if (currentParams.mode === 'text') {
+      longest = Math.max(currentParams.canvasWidth, currentParams.canvasHeight);
+    } else if (currentParams.mode === 'video') {
+      longest = AUTO_CANVAS_LONG;
+    } else {
+      // image: explicit canvas when a crop/format is applied, else auto default
+      longest = currentParams.cropRect
         ? Math.max(currentParams.canvasWidth, currentParams.canvasHeight)
-        : currentParams.canvasSize;
+        : AUTO_CANVAS_LONG;
+    }
     return Math.min(1, PREVIEW_MAX / longest);
   }
 
@@ -305,8 +316,12 @@ export function createSketch(container: HTMLElement): SketchHandle {
   }
 
   /**
-   * Compute w/h so the longest side equals canvasSize and aspect ratio matches
-   * the loaded image. If no image is loaded, keeps square canvasSize × canvasSize.
+   * Compute canvas w/h for the current mode.
+   * - Text: free canvasWidth × canvasHeight.
+   * - Video: follow the active clip's aspect ratio at AUTO_CANVAS_LONG.
+   * - Image with a crop/format applied: explicit canvasWidth × canvasHeight.
+   * - Image without a crop (auto): follow the loaded image aspect at
+   *   AUTO_CANVAS_LONG (square when no image is loaded).
    */
   function computeDims(): { w: number; h: number } {
     const scaleDims = renderScale();
@@ -317,26 +332,24 @@ export function createSketch(container: HTMLElement): SketchHandle {
         h: Math.max(1, Math.round(currentParams.canvasHeight * scaleDims)),
       };
     }
-    const size = Math.round(currentParams.canvasSize * scaleDims);
-    const fmt = currentParams.canvasFormat;
-    if (fmt === 'din-portrait') {
-      return { w: Math.max(1, Math.round(size / Math.SQRT2)), h: size };
-    }
-    if (fmt === 'din-landscape') {
-      return { w: size, h: Math.max(1, Math.round(size / Math.SQRT2)) };
-    }
-    if (fmt === 'square') {
-      return { w: size, h: size };
-    }
-    // 'auto' in video mode: follow the active clip's aspect ratio
+    // Video mode: follow the active clip's aspect ratio
     if (currentParams.mode === 'video') {
+      const size = Math.round(AUTO_CANVAS_LONG * scaleDims);
       const a = currentParams.videoAspect || 16 / 9;
       if (a >= 1) {
         return { w: size, h: Math.max(1, Math.round(size / a)) };
       }
       return { w: Math.max(1, Math.round(size * a)), h: size };
     }
-    // 'auto': follow image aspect, square if no image
+    // Image mode with an explicit crop/format from the modal
+    if (currentParams.cropRect) {
+      return {
+        w: Math.max(1, Math.round(currentParams.canvasWidth * scaleDims)),
+        h: Math.max(1, Math.round(currentParams.canvasHeight * scaleDims)),
+      };
+    }
+    // Image mode 'auto': follow image aspect at the default long side
+    const size = Math.round(AUTO_CANVAS_LONG * scaleDims);
     if (!loadedImage) return { w: size, h: size };
     const imgW = loadedImage.width;
     const imgH = loadedImage.height;
@@ -351,7 +364,7 @@ export function createSketch(container: HTMLElement): SketchHandle {
 
   /**
    * Resize canvas + recreate pg/src at the computed aspect-correct dimensions.
-   * Called on canvasSize change and after an image loads.
+   * Called on canvas-dimension change and after an image loads.
    */
   function applyCanvasSize(p5inst: p5): void {
     const { w, h } = computeDims();
@@ -469,6 +482,26 @@ export function createSketch(container: HTMLElement): SketchHandle {
     return { dx, dy, dw, dh };
   }
 
+  /** True when the still image should be sampled from an explicit crop rectangle
+   *  (image mode with a format/crop applied). Video frames are never cropped. */
+  function useImageCrop(): boolean {
+    return currentParams.mode === 'image' && currentParams.cropRect !== null;
+  }
+
+  /** Source sub-rectangle (in content px) that maps to the full cw × ch canvas,
+   *  derived from the normalized cropRect. Only valid when useImageCrop() is true. */
+  function cropSourceRect(contentW: number, contentH: number): {
+    sx: number; sy: number; sw: number; sh: number;
+  } {
+    const c = currentParams.cropRect!;
+    return {
+      sx: c.x * contentW,
+      sy: c.y * contentH,
+      sw: Math.max(1, c.w * contentW),
+      sh: Math.max(1, c.h * contentH),
+    };
+  }
+
   /**
    * Render the loaded image cover-fitted into a cw×ch RGBA buffer, optionally
    * Gaussian-blurred by `blurPx`. Used by image-mask mode to produce the sharp
@@ -484,10 +517,15 @@ export function createSketch(container: HTMLElement): SketchHandle {
       ctx.fillRect(0, 0, cw, ch);
     }
     if (loadedImage) {
-      const { dx, dy, dw, dh } = coverFit(loadedImage.width, loadedImage.height);
       const useFilter = canvasBlurSupported();
       if (blurPx > 0 && useFilter) ctx.filter = `blur(${blurPx}px)`;
-      ctx.drawImage((loadedImage as any).canvas, dx, dy, dw, dh);
+      if (useImageCrop()) {
+        const { sx, sy, sw, sh } = cropSourceRect(loadedImage.width, loadedImage.height);
+        ctx.drawImage((loadedImage as any).canvas, sx, sy, sw, sh, 0, 0, cw, ch);
+      } else {
+        const { dx, dy, dw, dh } = coverFit(loadedImage.width, loadedImage.height);
+        ctx.drawImage((loadedImage as any).canvas, dx, dy, dw, dh);
+      }
       if (blurPx > 0 && useFilter) ctx.filter = 'none';
       const id = ctx.getImageData(0, 0, cw, ch);
       if (blurPx > 0 && !useFilter) gaussianBlur(id.data, cw, ch, blurPx);
@@ -505,9 +543,14 @@ export function createSketch(container: HTMLElement): SketchHandle {
     if (!maskPg) return;
     maskPg.clear();
     if (!foregroundMask || currentParams.mode !== 'image') return;
-    const { dx, dy, dw, dh } = coverFit(foregroundMask.width, foregroundMask.height);
     const ctx = (maskPg as any).drawingContext as CanvasRenderingContext2D;
-    ctx.drawImage(foregroundMask, dx, dy, dw, dh);
+    if (useImageCrop()) {
+      const { sx, sy, sw, sh } = cropSourceRect(foregroundMask.width, foregroundMask.height);
+      ctx.drawImage(foregroundMask, sx, sy, sw, sh, 0, 0, cw, ch);
+    } else {
+      const { dx, dy, dw, dh } = coverFit(foregroundMask.width, foregroundMask.height);
+      ctx.drawImage(foregroundMask, dx, dy, dw, dh);
+    }
     maskPg.loadPixels();
   }
 
@@ -551,66 +594,13 @@ export function createSketch(container: HTMLElement): SketchHandle {
   }
 
   /**
-   * Composite a transition frame from two sources BEFORE halftone sampling —
-   * the blended result is a single valid halftone target, so the dot grid
-   * morphs cleanly instead of two dot patterns cross-fading over each other.
-   */
-  function drawTransitionBlend(
-    ctx: CanvasRenderingContext2D,
-    frame: CanvasImageSource, fw: number, fh: number,
-    mix: FrameMix,
-  ): void {
-    const t = Math.max(0, Math.min(1, mix.t));
-
-    if (mix.type === 'wipe') {
-      drawFrameCover(ctx, frame, fw, fh);
-      ctx.save();
-      ctx.beginPath();
-      const dir = mix.direction ?? 'left';
-      if (dir === 'left') ctx.rect(0, 0, cw * t, ch);
-      else if (dir === 'right') ctx.rect(cw * (1 - t), 0, cw * t, ch);
-      else if (dir === 'up') ctx.rect(0, 0, cw, ch * t);
-      else ctx.rect(0, ch * (1 - t), cw, ch * t);
-      ctx.clip();
-      drawFrameCover(ctx, mix.other, mix.otherWidth, mix.otherHeight);
-      ctx.restore();
-      return;
-    }
-
-    if (mix.type === 'dip-to-color') {
-      const color = mix.color ?? '#000000';
-      if (t < 0.5) {
-        drawFrameCover(ctx, frame, fw, fh);
-        ctx.save();
-        ctx.globalAlpha = t * 2;
-        ctx.fillStyle = color;
-        ctx.fillRect(0, 0, cw, ch);
-        ctx.restore();
-      } else {
-        drawFrameCover(ctx, mix.other, mix.otherWidth, mix.otherHeight);
-        ctx.save();
-        ctx.globalAlpha = (1 - t) * 2;
-        ctx.fillStyle = color;
-        ctx.fillRect(0, 0, cw, ch);
-        ctx.restore();
-      }
-      return;
-    }
-
-    // crossfade (default)
-    drawFrameCover(ctx, frame, fw, fh);
-    ctx.save();
-    ctx.globalAlpha = t;
-    drawFrameCover(ctx, mix.other, mix.otherWidth, mix.otherHeight);
-    ctx.restore();
-  }
-
-  /**
-   * Video path parallel to rebuildSrc: composite the given frame (plus
-   * optional transition mix) into the src buffer without p5.loadImage.
+   * Video path parallel to rebuildSrc: draw the given (already composited by
+   * the timeline compositor) frame into the src buffer, cover-fitted, without
+   * p5.loadImage. Transition compositing happens upstream, so the halftone
+   * grid always samples a single valid target frame.
    */
   function rebuildSrcFromFrame(
-    frame: CanvasImageSource, fw: number, fh: number, mix?: FrameMix,
+    frame: CanvasImageSource, fw: number, fh: number,
   ): void {
     if (!src) return;
     const { preBlur } = currentParams;
@@ -622,11 +612,7 @@ export function createSketch(container: HTMLElement): SketchHandle {
     const ctx = (src as any).drawingContext as CanvasRenderingContext2D;
     const useFilter = canvasBlurSupported();
     if (preBlur > 0 && useFilter) ctx.filter = `blur(${preBlur * scale}px)`;
-    if (mix && mix.type !== 'none') {
-      drawTransitionBlend(ctx, frame, fw, fh, mix);
-    } else {
-      drawFrameCover(ctx, frame, fw, fh);
-    }
+    drawFrameCover(ctx, frame, fw, fh);
     if (preBlur > 0 && useFilter) ctx.filter = 'none';
 
     applySourceFilters(ctx);
@@ -640,8 +626,8 @@ export function createSketch(container: HTMLElement): SketchHandle {
     }
     if (currentParams.mode === 'video') {
       if (lastVideoFrame) {
-        const { frame, w, h, mix } = lastVideoFrame;
-        rebuildSrcFromFrame(frame, w, h, mix);
+        const { frame, w, h } = lastVideoFrame;
+        rebuildSrcFromFrame(frame, w, h);
       }
       return;
     }
@@ -655,10 +641,15 @@ export function createSketch(container: HTMLElement): SketchHandle {
     const ctx = (src as any).drawingContext as CanvasRenderingContext2D;
     const imgW = loadedImage.width;
     const imgH = loadedImage.height;
-    const { dx, dy, dw, dh } = coverFit(imgW, imgH);
     const useFilter = canvasBlurSupported();
     if (preBlur > 0 && useFilter) ctx.filter = `blur(${preBlur * scale}px)`;
-    src.image(loadedImage, dx, dy, dw, dh);
+    if (useImageCrop()) {
+      const { sx, sy, sw, sh } = cropSourceRect(imgW, imgH);
+      src.image(loadedImage, 0, 0, cw, ch, sx, sy, sw, sh);
+    } else {
+      const { dx, dy, dw, dh } = coverFit(imgW, imgH);
+      src.image(loadedImage, dx, dy, dw, dh);
+    }
     if (preBlur > 0 && useFilter) ctx.filter = 'none';
 
     applySourceFilters(ctx);
@@ -892,18 +883,18 @@ export function createSketch(container: HTMLElement): SketchHandle {
     currentParams = { ...params };
 
     const resolutionChanged =
-      params.canvasSize !== prev.canvasSize ||
       params.preview !== prev.preview ||
-      params.canvasFormat !== prev.canvasFormat ||
       params.mode !== prev.mode ||
       params.canvasWidth !== prev.canvasWidth ||
       params.canvasHeight !== prev.canvasHeight ||
+      (params.cropRect === null) !== (prev.cropRect === null) ||
       params.videoAspect !== prev.videoAspect;
     const srcChanged =
       params.preBlur !== prev.preBlur ||
       params.noiseAmount !== prev.noiseAmount ||
       params.imageOffsetX !== prev.imageOffsetX ||
       params.imageOffsetY !== prev.imageOffsetY ||
+      params.cropRect !== prev.cropRect ||
       params.text !== prev.text ||
       params.fontFamily !== prev.fontFamily ||
       params.fontSize !== prev.fontSize ||
@@ -952,15 +943,15 @@ export function createSketch(container: HTMLElement): SketchHandle {
   }
 
   function setVideoFrame(
-    frame: CanvasImageSource, frameW: number, frameH: number, mix?: FrameMix,
+    frame: CanvasImageSource, frameW: number, frameH: number,
   ): void {
     if (currentParams.mode !== 'video') return;
     const hadContent = lastVideoFrame !== null;
-    lastVideoFrame = { frame, w: frameW, h: frameH, mix };
+    lastVideoFrame = { frame, w: frameW, h: frameH };
     // First frame after an empty state: canvas may still be sized for "no
     // content" — apply dims before compositing.
     if (!hadContent) applyCanvasSize(p5Instance);
-    rebuildSrcFromFrame(frame, frameW, frameH, mix);
+    rebuildSrcFromFrame(frame, frameW, frameH);
     p5Instance.redraw();
   }
 
@@ -981,10 +972,10 @@ export function createSketch(container: HTMLElement): SketchHandle {
   }
 
   async function renderVideoFrame(
-    frame: CanvasImageSource, frameW: number, frameH: number, mix?: FrameMix,
+    frame: CanvasImageSource, frameW: number, frameH: number,
   ): Promise<HTMLCanvasElement> {
-    lastVideoFrame = { frame, w: frameW, h: frameH, mix };
-    rebuildSrcFromFrame(frame, frameW, frameH, mix);
+    lastVideoFrame = { frame, w: frameW, h: frameH };
+    rebuildSrcFromFrame(frame, frameW, frameH);
     p5Instance.redraw();
     // p5 2.x does not guarantee the redraw has flushed before the next line.
     await new Promise<void>(r => requestAnimationFrame(() => r()));

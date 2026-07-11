@@ -1,21 +1,20 @@
 import type {
   VideoCodec,
+  VideoClip,
   VideoTimelineData,
   VideoExportSettings,
   SketchHandle,
-  FrameMix,
 } from '../types';
-import { timelineDuration, evaluateTimeline } from './timeline';
-import { getOrCreateFrameSource } from './frameSource';
-import { detectEncodePath } from './encoders/webcodecs';
-import { createWebCodecsSession, type EncodeSession } from './encoders/webcodecsEncode';
-import { createFfmpegSession } from './encoders/ffmpegFallback';
+import { timelineDuration, clipEnd } from './timeline';
+import { drawTimelineFrame, type CompositorSources } from './compositor';
+import { probeCodecSupport } from './encoders/webcodecs';
+import { createMediabunnySession } from './encoders/mediabunnyEncode';
 
 export interface ExportProgress {
   phase: 'preparing' | 'rendering' | 'encoding' | 'finalizing';
   framesDone: number;
   totalFrames: number;
-  /** true when going through the ffmpeg software path */
+  /** true when mediabunny falls back to a software WebCodecs encoder */
   software: boolean;
 }
 
@@ -62,12 +61,100 @@ function abortError(): DOMException {
   return new DOMException('Export aborted', 'AbortError');
 }
 
+/** Create a muted <video> element preloaded and ready to be seeked. The element
+ *  is attached to the DOM off-screen (NOT display:none) — a detached or
+ *  display:none <video> gets its decode pipeline suspended by the browser, so
+ *  seeks resolve but drawImage yields a stale first frame. Positioning it out of
+ *  view keeps the decoder live while staying invisible. */
+function createVideoEl(clip: VideoClip): Promise<HTMLVideoElement> {
+  const el = document.createElement('video');
+  el.muted = true;
+  el.playsInline = true;
+  el.preload = 'auto';
+  el.crossOrigin = 'anonymous';
+  el.style.position = 'fixed';
+  el.style.left = '-10000px';
+  el.style.top = '0';
+  el.style.width = '2px';
+  el.style.height = '2px';
+  el.style.opacity = '0';
+  el.style.pointerEvents = 'none';
+  el.src = clip.src;
+  document.body.appendChild(el);
+  return new Promise<HTMLVideoElement>(resolve => {
+    const done = () => resolve(el);
+    // Wait for enough data that seeking can actually decode frames.
+    el.oncanplay = done;
+    el.onloadeddata = done;
+    el.onerror = done; // best-effort: draw a black frame rather than block export
+  });
+}
+
+/** Whether the browser can signal a decoded video frame is ready to paint. */
+function hasFrameCallback(el: HTMLVideoElement): boolean {
+  return typeof (el as unknown as { requestVideoFrameCallback?: unknown })
+    .requestVideoFrameCallback === 'function';
+}
+
+/** Preload a still's image element (decode() up front so drawImage never blocks). */
+function loadImage(src: string): Promise<HTMLImageElement> {
+  const img = new Image();
+  img.src = src;
+  if (img.decode) {
+    return img.decode().then(() => img, () => img);
+  }
+  return new Promise<HTMLImageElement>(resolve => {
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(img);
+  });
+}
+
+/** Seek `el` to `time` seconds and resolve once a decoded frame for that time
+ *  is actually ready to paint. Relies on requestVideoFrameCallback (fires only
+ *  after a frame is available for compositing) when present — the plain
+ *  'seeked' event can fire before the frame is decoded, which is what makes
+ *  drawImage grab a stale frame and produce an all-identical-frames export.
+ *  Falls back to 'seeked' + a guard timeout on browsers without rVFC. */
+function seekVideo(el: HTMLVideoElement, time: number): Promise<void> {
+  return new Promise<void>(resolve => {
+    let settled = false;
+    // Already at the target time and a frame is decoded → nothing to wait for.
+    if (Math.abs(el.currentTime - time) < 1e-3 && el.readyState >= 2) {
+      resolve();
+      return;
+    }
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      el.removeEventListener('seeked', onSeeked);
+      clearTimeout(timer);
+      resolve();
+    };
+    const onSeeked = () => {
+      if (hasFrameCallback(el)) {
+        // 'seeked' fired, but wait one more decoded-frame tick to be sure the
+        // pixels for `time` are actually available to drawImage.
+        (el as unknown as {
+          requestVideoFrameCallback(cb: () => void): number;
+        }).requestVideoFrameCallback(finish);
+      } else {
+        finish();
+      }
+    };
+    el.addEventListener('seeked', onSeeked);
+    // Longer guard than the frame path: a slow decode shouldn't drop the frame.
+    const timer = setTimeout(finish, 2000);
+    el.currentTime = time;
+  });
+}
+
 /**
  * Render the full timeline frame-by-frame through the sketch's full-res
- * export path and encode it to a downloadable video file. Prefers a
- * WebCodecs + browser muxer session (fast, hardware-accelerated where
- * available); falls back to an ffmpeg.wasm software session when the
- * codec/container combination isn't supported by the browser encoder/muxer.
+ * export path and encode it to a downloadable video file. Uses mediabunny
+ * for both hardware and software-accelerated encoding/muxing. Compositing
+ * (clips + transitions) runs through the same drawTimelineFrame() used by
+ * the preview, driven here by hidden <video> elements seeked per frame
+ * instead of Remotion's Player.
  */
 export async function exportVideo(opts: {
   timeline: VideoTimelineData;
@@ -86,48 +173,57 @@ export async function exportVideo(opts: {
   const totalFrames = Math.max(0, Math.ceil(duration * fps));
 
   // Resolution is expressed as the longest output side; derive width/height
-  // from the first clip's aspect ratio (falls back to 16:9).
-  const aspect = timeline.clips[0] ? timeline.clips[0].width / timeline.clips[0].height : 16 / 9;
+  // from the timeline's chosen output aspect ratio.
+  const aspect = timeline.aspect.w / timeline.aspect.h;
   const width = aspect >= 1 ? resolution : Math.round(resolution * aspect);
   const height = aspect >= 1 ? Math.round(resolution / aspect) : resolution;
 
-  onProgress({ phase: 'preparing', framesDone: 0, totalFrames, software: false });
-
-  const path = await detectEncodePath(codec, container, width, height, fps, bitrate);
-  const software = path === 'ffmpeg';
-
-  let session: EncodeSession;
-  if (path === 'webcodecs') {
-    session = await createWebCodecsSession({
-      codec,
-      container: container as 'mp4' | 'webm',
-      width,
-      height,
-      fps,
-      bitrate,
-    });
-  } else {
-    session = await createFfmpegSession({
-      codec,
-      container,
-      width,
-      height,
-      fps,
-      bitrate,
-      onLoadProgress: (ratio) => {
-        onProgress({ phase: 'preparing', framesDone: 0, totalFrames, software: true });
-        void ratio; // loader ratio is folded into the 'preparing' phase; no sub-progress field to report it in.
-      },
-    });
+  const support = await probeCodecSupport(codec, container, width, height, fps, bitrate);
+  if (support === 'unsupported') {
+    throw new Error(`Codec ${codec} in ${container} not supported`);
   }
+  const software = support === 'software';
+
+  onProgress({ phase: 'preparing', framesDone: 0, totalFrames, software });
+
+  const session = await createMediabunnySession({
+    codec,
+    container,
+    width,
+    height,
+    fps,
+    bitrate,
+  });
+
+  // Compositing canvas at the exact output size; each frame is composited
+  // here, then run through the halftone renderer.
+  const compositeCanvas = document.createElement('canvas');
+  compositeCanvas.width = width;
+  compositeCanvas.height = height;
+  const compositeCtx = compositeCanvas.getContext('2d')!;
+
+  const videoClips = timeline.clips.filter((c): c is VideoClip => c.type === 'video');
+  const stillClips = timeline.clips.filter(c => c.type === 'still');
+
+  const videoEls = new Map<string, HTMLVideoElement>();
+  const images = new Map<string, HTMLImageElement>();
+
+  await Promise.all([
+    ...videoClips.map(async c => videoEls.set(c.id, await createVideoEl(c))),
+    ...stillClips.map(async c => images.set(c.id, await loadImage(c.src))),
+  ]);
+
+  const sources: CompositorSources = {
+    getVideoEl: id => videoEls.get(id) ?? null,
+    getImage: id => images.get(id) ?? null,
+  };
 
   await sketch.beginVideoExport();
 
-  // The sketch renders at its own full canvas resolution (params.canvasSize),
-  // which generally differs from the requested output resolution. WebCodecs
-  // happens to rescale VideoFrames to the encoder config, but the ffmpeg path
-  // encodes PNG frames verbatim — so normalize every frame to the exact
-  // output size here, through one reused scaling canvas.
+  // The sketch renders at its own full canvas resolution,
+  // which generally differs from the requested output resolution — so
+  // normalize every frame to the exact output size here, through one reused
+  // scaling canvas, before handing it to the mediabunny CanvasSource.
   const scaleCanvas = document.createElement('canvas');
   scaleCanvas.width = width;
   scaleCanvas.height = height;
@@ -147,35 +243,27 @@ export async function exportVideo(opts: {
       }
 
       const t = i / fps;
-      const sample = evaluateTimeline(timeline, t);
-      if (!sample) continue;
 
-      const source = await getOrCreateFrameSource(sample.clip);
-      const frameResult = await source.getFrameAt(sample.clipTime);
+      // Seek every video clip active at this frame to its exact media time.
+      await Promise.all(
+        videoClips
+          .filter(c => t >= c.startTime && t < clipEnd(c))
+          .map(c => {
+            const el = videoEls.get(c.id);
+            if (!el) return Promise.resolve();
+            const mediaTime = Math.min(c.outPoint, Math.max(c.inPoint, c.inPoint + (t - c.startTime)));
+            return seekVideo(el, mediaTime);
+          }),
+      );
 
-      let mix: FrameMix | undefined;
-      if (sample.transition) {
-        const { other, otherTime, t: mixT, def } = sample.transition;
-        const otherSource = await getOrCreateFrameSource(other);
-        const otherFrameResult = await otherSource.getFrameAt(otherTime);
-        mix = {
-          other: otherFrameResult.source,
-          otherWidth: otherFrameResult.width,
-          otherHeight: otherFrameResult.height,
-          t: mixT,
-          type: def.type,
-          color: def.color,
-          direction: def.direction,
-        };
-      }
+      drawTimelineFrame(compositeCtx, timeline, t, sources);
 
       onProgress({ phase: 'rendering', framesDone: i, totalFrames, software });
 
       const canvas = await sketch.renderVideoFrame(
-        frameResult.source,
-        frameResult.width,
-        frameResult.height,
-        mix,
+        compositeCanvas,
+        compositeCanvas.width,
+        compositeCanvas.height,
       );
 
       if (signal.aborted) {
@@ -197,5 +285,13 @@ export async function exportVideo(opts: {
     downloadBlob(blob, `halftone.${container}`);
   } finally {
     sketch.endVideoExport();
+    for (const el of videoEls.values()) {
+      el.pause();
+      el.removeAttribute('src');
+      el.load();
+      el.remove();
+    }
+    videoEls.clear();
+    images.clear();
   }
 }

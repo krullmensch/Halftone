@@ -1,11 +1,18 @@
 export type GridType = 'regular' | 'benday';
 
-/** Canvas aspect-ratio mode: 'auto' follows the source image,
- *  DIN formats use the A-series 1:√2 ratio, 'square' is 1:1. */
-export type CanvasFormat = 'auto' | 'din-portrait' | 'din-landscape' | 'square';
-
 /** Source mode: halftone an uploaded image, rendered text, or video frames. */
 export type CanvasMode = 'image' | 'text' | 'video';
+
+/** Normalized crop rectangle inside the source image (all fields 0–1). Defines
+ *  which region of the image is stretched to fill the canvas. Its aspect ratio
+ *  matches the canvas (canvasWidth/canvasHeight). When null, the image is
+ *  cover-fitted to the canvas (auto: canvas follows the image aspect). */
+export interface CropRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
 
 export type TextAlign = 'left' | 'center' | 'right';
 
@@ -43,7 +50,21 @@ export interface TextBox {
 /** Clip source kind: a video file, or a still image shown for a set duration. */
 export type ClipSourceType = 'video' | 'still';
 
-/** One clip in the single-track video timeline. */
+/** Per-clip spatial placement inside the canvas frame.
+ *  x,y are the normalized position of the clip's CENTER in the canvas
+ *  (0..1, 0.5 = centered on that axis). scale is a multiplier on the clip's
+ *  contain-fit size (1 = the clip is contain-fitted to the canvas; >1 zooms in,
+ *  <1 shrinks). Area not covered by any clip renders black. */
+export interface ClipTransform {
+  x: number;
+  y: number;
+  scale: number;
+}
+
+/** Identity transform: contain-fitted and centered on both axes. */
+export const DEFAULT_CLIP_TRANSFORM: ClipTransform = { x: 0.5, y: 0.5, scale: 1 };
+
+/** One clip on the free-placement video timeline. */
 export interface VideoClip {
   id: string;
   type: ClipSourceType;
@@ -63,28 +84,62 @@ export interface VideoClip {
   height: number;
   /** Thumbnail data URL for the timeline strip */
   thumbnail?: string;
+  /** Absolute start position on the timeline, in seconds. Clips may be freely
+   *  placed; a gap between clips renders as a black canvas. */
+  startTime: number;
+  /** Spatial placement of the clip inside the canvas frame. */
+  transform: ClipTransform;
 }
 
-export type TransitionType = 'none' | 'crossfade' | 'dip-to-color' | 'wipe';
+export type TransitionType = 'crossfade' | 'dip-to-color' | 'wipe';
 
 export type WipeDirection = 'left' | 'right' | 'up' | 'down';
 
-/** Transition between two adjacent clips (occupies tail of A / head of B). */
-export interface ClipTransition {
+/** A free-placed transition block on the timeline's transition track. Occupies
+ *  an absolute [startTime, startTime+duration] window; its edges are draggable.
+ *  crossfade/wipe blend `fromClipId` (outgoing) into `toClipId` (incoming) over
+ *  the window; dip-to-color overlays a solid color (fade to/through a color). */
+export interface TimelineTransition {
+  id: string;
   type: TransitionType;
-  /** Duration in seconds, clamped to min(tail of A, head of B) at evaluation */
+  /** Absolute start on the timeline, in seconds. */
+  startTime: number;
+  /** Length of the transition, in seconds. */
   duration: number;
   /** 'dip-to-color' only */
   color?: string;
   /** 'wipe' only */
   direction?: WipeDirection;
+  /** crossfade/wipe: outgoing clip whose tail is left behind. */
+  fromClipId?: string;
+  /** crossfade/wipe: incoming clip revealed over the window. */
+  toClipId?: string;
 }
 
-/** Single-track timeline. transitions[i] sits between clips[i] and clips[i+1]. */
+/** Output aspect ratio of the timeline canvas (e.g. 16:9 → {w:16,h:9}). */
+export interface TimelineAspect {
+  w: number;
+  h: number;
+}
+
+/** Free-placement timeline: clips carry explicit start times, transitions are
+ *  independent draggable blocks, and the canvas has an explicit aspect + res. */
 export interface VideoTimelineData {
   clips: VideoClip[];
-  transitions: ClipTransition[];
+  transitions: TimelineTransition[];
+  /** Output aspect ratio of the canvas. */
+  aspect: TimelineAspect;
+  /** Longest canvas side in px (drives canvas dimensions with `aspect`). */
+  resolution: number;
 }
+
+/** Default empty timeline: 16:9 at 1080px longest side. */
+export const DEFAULT_TIMELINE: VideoTimelineData = {
+  clips: [],
+  transitions: [],
+  aspect: { w: 16, h: 9 },
+  resolution: 1080,
+};
 
 export type VideoContainer = 'mp4' | 'mov' | 'webm';
 export type VideoCodec = 'h264' | 'h265' | 'vp8' | 'vp9' | 'av1';
@@ -99,25 +154,14 @@ export interface VideoExportSettings {
   bitrate?: number;
 }
 
-/** How a transition frame is composited from two source frames (t = 0..1). */
-export interface FrameMix {
-  other: CanvasImageSource;
-  /** Other frame's natural size (VideoFrame/ImageBitmap don't expose width/height uniformly) */
-  otherWidth: number;
-  otherHeight: number;
-  t: number;
-  type: TransitionType;
-  color?: string;
-  direction?: WipeDirection;
-}
-
 export interface HalftoneParams {
   /** Source mode: image upload or rendered text */
   mode: CanvasMode;
-  /** Working resolution: length of the longest canvas side in px (600–4000). */
-  canvasSize: number;
-  /** Canvas aspect ratio mode (see CanvasFormat) */
-  canvasFormat: CanvasFormat;
+  /** Crop/format of the source image (image mode). When set, the canvas uses
+   *  the explicit canvasWidth × canvasHeight (in px) chosen in the format modal
+   *  and the image is sampled from this normalized sub-rectangle. When null,
+   *  the canvas auto-follows the image aspect at a default working resolution. */
+  cropRect: CropRect | null;
   /** Normalized horizontal pan of the cover-fitted source image inside the
    *  canvas (0–1, 0.5 = centered). Only effective when the image and canvas
    *  aspect ratios differ. */
@@ -164,10 +208,11 @@ export interface HalftoneParams {
    *  JPG export flattens onto bgColor) */
   transparentBg: boolean;
 
-  // ── Text mode ──────────────────────────────────────────────────────────
-  /** Free canvas width in px (text mode only) */
+  // ── Canvas dimensions ────────────────────────────────────────────────────
+  /** Explicit canvas width in px. Text mode: free canvas. Image mode: used when
+   *  cropRect is set (chosen via the format modal). */
   canvasWidth: number;
-  /** Free canvas height in px (text mode only) */
+  /** Explicit canvas height in px. See canvasWidth. */
   canvasHeight: number;
   /** Text content to render */
   text: string;
@@ -195,8 +240,7 @@ export interface HalftoneParams {
 
 export const DEFAULT_PARAMS: HalftoneParams = {
   mode: 'image',
-  canvasSize: 2400,
-  canvasFormat: 'auto',
+  cropRect: null,
   imageOffsetX: 0.5,
   imageOffsetY: 0.5,
   stepSize: 20,
@@ -244,13 +288,13 @@ export interface SketchHandle {
    *  SVG traces the ink/background pixel boundary of the post-processed bitmap
    *  (including ink-bleed merging) into vector paths. */
   exportImage(format: ExportFormat): void | Promise<void>;
-  /** Video mode: composite a source frame (plus optional transition mix) into
-   *  the src buffer and redraw the halftone. Caller drives the frame cadence. */
+  /** Video mode: draw an already-composited source frame (the timeline
+   *  compositor's output canvas) into the src buffer and redraw the halftone.
+   *  Caller drives the frame cadence. */
   setVideoFrame(
     frame: CanvasImageSource,
     frameW: number,
     frameH: number,
-    mix?: FrameMix,
   ): void;
   /** Enter full-resolution rendering for a video export session. Recreates
    *  buffers once; renderVideoFrame calls between begin/end reuse them. */
@@ -263,7 +307,6 @@ export interface SketchHandle {
     frame: CanvasImageSource,
     frameW: number,
     frameH: number,
-    mix?: FrameMix,
   ): Promise<HTMLCanvasElement>;
   destroy(): void;
 }

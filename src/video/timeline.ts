@@ -1,110 +1,85 @@
-import type { VideoClip, VideoTimelineData, ClipTransition } from '../types';
+import type { VideoClip, VideoTimelineData, ClipTransform } from '../types';
 
 /** Playable seconds of a clip after trimming (never negative). */
 export function clipPlayableDuration(clip: VideoClip): number {
   return Math.max(0, clip.outPoint - clip.inPoint);
 }
 
-/**
- * Effective transition duration between clips[i] and clips[i+1], clamped to
- * half of each neighbor's playable duration so a transition can never eat
- * more than a clip has to offer. Always 0 for type 'none' or out-of-range i.
- */
-export function effectiveTransitionDuration(tl: VideoTimelineData, i: number): number {
-  const def = tl.transitions[i];
-  const a = tl.clips[i];
-  const b = tl.clips[i + 1];
-  if (!def || !a || !b || def.type === 'none') return 0;
-  const maxA = clipPlayableDuration(a) / 2;
-  const maxB = clipPlayableDuration(b) / 2;
-  return Math.max(0, Math.min(def.duration, maxA, maxB));
+/** Absolute end time of a clip on the timeline (startTime + playable). */
+export function clipEnd(clip: VideoClip): number {
+  return clip.startTime + clipPlayableDuration(clip);
 }
 
 /**
- * Total timeline duration. Transitions OVERLAP: each transition of duration d
- * makes clip B start d seconds before clip A ends (standard NLE semantics),
- * so duration = sum(playable) - sum(effective transition durations).
+ * Total timeline duration: the latest end among all clips and transition blocks.
+ * Gaps between clips are included (they render as black). 0 for an empty timeline.
  */
 export function timelineDuration(tl: VideoTimelineData): number {
-  let total = 0;
-  for (const clip of tl.clips) total += clipPlayableDuration(clip);
-  for (let i = 0; i < tl.clips.length - 1; i++) total -= effectiveTransitionDuration(tl, i);
-  return Math.max(0, total);
+  let end = 0;
+  for (const clip of tl.clips) end = Math.max(end, clipEnd(clip));
+  for (const t of tl.transitions) end = Math.max(end, t.startTime + t.duration);
+  return Math.max(0, end);
 }
 
-/** Start time of clip i on the global timeline (accounting for overlaps). */
-export function clipStartTime(tl: VideoTimelineData, i: number): number {
-  let t = 0;
-  for (let k = 0; k < i; k++) {
-    t += clipPlayableDuration(tl.clips[k]) - effectiveTransitionDuration(tl, k);
+/** Output canvas dimensions from the timeline's aspect + resolution (longest side). */
+export function canvasDims(tl: VideoTimelineData): { w: number; h: number } {
+  const { w: aw, h: ah } = tl.aspect;
+  const res = Math.max(1, Math.round(tl.resolution));
+  if (aw >= ah) {
+    return { w: res, h: Math.max(1, Math.round((res * ah) / aw)) };
   }
-  return t;
+  return { w: Math.max(1, Math.round((res * aw) / ah)), h: res };
 }
 
-export interface TimelineSample {
-  clipIndex: number;
-  clip: VideoClip;
-  /** Time within the clip's SOURCE media (inPoint already added) */
-  clipTime: number;
-  /** Present while inside a transition window into the NEXT clip */
-  transition?: {
-    otherIndex: number;
-    other: VideoClip;
-    otherTime: number; // source time within the next clip
-    t: number; // 0..1 progress through the transition
-    def: ClipTransition;
-  };
+/** Canvas aspect ratio (w/h) for the halftone renderer's videoAspect param. */
+export function canvasAspect(tl: VideoTimelineData): number {
+  return tl.aspect.w / tl.aspect.h;
+}
+
+export interface DestRect {
+  destX: number;
+  destY: number;
+  destWidth: number;
+  destHeight: number;
 }
 
 /**
- * Which clip(s) are visible at global time t. Returns null for an empty
- * timeline; clamps t into [0, duration]. During a transition the sample's
- * `clip` is the OUTGOING clip and `transition.other` the incoming one.
+ * Where a clip's video is drawn inside a cw×ch canvas, given its transform.
+ * The clip is contain-fitted to the canvas (preserving its native aspect),
+ * scaled by transform.scale, then positioned so its center sits at
+ * (transform.x*cw, transform.y*ch). Reused by the timeline compositor and by
+ * the on-canvas drag hit-test / inverse mapping.
  */
-export function evaluateTimeline(tl: VideoTimelineData, t: number): TimelineSample | null {
-  if (tl.clips.length === 0) return null;
-  const duration = timelineDuration(tl);
-  const clamped = Math.max(0, Math.min(t, duration));
+export function clipDestRect(clip: VideoClip, cw: number, ch: number): DestRect {
+  const nativeAspect = clip.width && clip.height ? clip.width / clip.height : cw / ch;
+  const canvasAspectRatio = cw / ch;
 
-  for (let i = 0; i < tl.clips.length; i++) {
-    const clip = tl.clips[i];
-    const start = clipStartTime(tl, i);
-    const playable = clipPlayableDuration(clip);
-    const end = start + playable;
-    if (clamped < start || clamped > end) continue;
-    // Not the last clip: check whether we're inside its outgoing transition window.
-    const transDur = i < tl.clips.length - 1 ? effectiveTransitionDuration(tl, i) : 0;
-    if (transDur > 0 && clamped >= end - transDur) {
-      const other = tl.clips[i + 1];
-      const def = tl.transitions[i];
-      const localT = (clamped - (end - transDur)) / transDur;
-      const otherTime = other.inPoint + localT * transDur;
-      return {
-        clipIndex: i,
-        clip,
-        clipTime: clip.inPoint + (clamped - start),
-        transition: {
-          otherIndex: i + 1,
-          other,
-          otherTime,
-          t: Math.max(0, Math.min(1, localT)),
-          def,
-        },
-      };
-    }
-    return {
-      clipIndex: i,
-      clip,
-      clipTime: clip.inPoint + (clamped - start),
-    };
+  // Contain-fit: fill the axis that constrains, letterbox the other.
+  let fitW: number;
+  let fitH: number;
+  if (nativeAspect >= canvasAspectRatio) {
+    fitW = cw;
+    fitH = cw / nativeAspect;
+  } else {
+    fitH = ch;
+    fitW = ch * nativeAspect;
   }
 
-  // Fallback: clamped time landed exactly on the end of the last clip.
-  const lastIndex = tl.clips.length - 1;
-  const lastClip = tl.clips[lastIndex];
+  const destWidth = fitW * clip.transform.scale;
+  const destHeight = fitH * clip.transform.scale;
+  const destX = clip.transform.x * cw - destWidth / 2;
+  const destY = clip.transform.y * ch - destHeight / 2;
+  return { destX, destY, destWidth, destHeight };
+}
+
+/** A transform re-centered on one or both axes (used by center-H / center-V). */
+export function centeredTransform(
+  t: ClipTransform,
+  axis: 'x' | 'y' | 'both',
+): ClipTransform {
   return {
-    clipIndex: lastIndex,
-    clip: lastClip,
-    clipTime: lastClip.outPoint,
+    ...t,
+    x: axis === 'x' || axis === 'both' ? 0.5 : t.x,
+    y: axis === 'y' || axis === 'both' ? 0.5 : t.y,
   };
 }

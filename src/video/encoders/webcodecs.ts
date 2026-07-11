@@ -1,4 +1,5 @@
 import type { VideoCodec, VideoContainer } from '../../types';
+import type { OutputFormat, VideoCodec as MbVideoCodec } from 'mediabunny';
 
 /** Ordered candidate codec strings for `VideoEncoder.isConfigSupported`,
  *  best profile/level first. Level suffixes are conservative defaults;
@@ -75,28 +76,55 @@ export async function pickEncoderConfig(
   return null;
 }
 
-export type EncodePath = 'webcodecs' | 'ffmpeg' | 'unsupported';
+function mapCodec(codec: VideoCodec): MbVideoCodec {
+  switch (codec) {
+    case 'h264':
+      return 'avc';
+    case 'h265':
+      return 'hevc';
+    default:
+      return codec;
+  }
+}
 
-/**
- * Choose the encode path for a given codec/container combination.
- * - `.mov` always routes through ffmpeg (no browser muxer targets QuickTime).
- * - mp4 + vp8 routes through ffmpeg (mp4-muxer supports 'avc'|'hevc'|'vp9'|'av1' only).
- * - webm + h264/h265 routes through ffmpeg (webm-muxer has no AVC/HEVC codec id).
- * - Otherwise, use WebCodecs if a supported hardware/software config is found,
- *   falling back to ffmpeg (always available, wasm-based) otherwise.
- */
-export async function detectEncodePath(
+export async function probeCodecSupport(
   codec: VideoCodec,
   container: VideoContainer,
   width: number,
   height: number,
   fps: number,
   bitrate: number,
-): Promise<EncodePath> {
-  if (container === 'mov') return 'ffmpeg';
-  if (container === 'mp4' && codec === 'vp8') return 'ffmpeg';
-  if (container === 'webm' && (codec === 'h264' || codec === 'h265')) return 'ffmpeg';
+): Promise<'hardware' | 'software' | 'unsupported'> {
+  try {
+    const mbCodec = mapCodec(codec);
+    const { Mp4OutputFormat, MovOutputFormat, WebMOutputFormat, canEncodeVideo } = await import('mediabunny');
 
-  const pick = await pickEncoderConfig(codec, width, height, fps, bitrate);
-  return pick ? 'webcodecs' : 'ffmpeg';
+    let format: OutputFormat;
+    switch (container) {
+      case 'mp4':
+        format = new Mp4OutputFormat({ fastStart: 'in-memory' });
+        break;
+      case 'mov':
+        format = new MovOutputFormat({ fastStart: 'in-memory' });
+        break;
+      case 'webm':
+        format = new WebMOutputFormat();
+        break;
+      default:
+        return 'unsupported';
+    }
+
+    if (!format.getSupportedVideoCodecs().includes(mbCodec)) {
+      return 'unsupported';
+    }
+
+    if (!(await canEncodeVideo(mbCodec, { width, height, bitrate }))) {
+      return 'unsupported';
+    }
+
+    const pick = await pickEncoderConfig(codec, width, height, fps, bitrate);
+    return pick && pick.hardware ? 'hardware' : 'software';
+  } catch {
+    return 'unsupported';
+  }
 }

@@ -1,4 +1,5 @@
 import type { VideoClip } from '../types';
+import { DEFAULT_CLIP_TRANSFORM } from '../types';
 
 /** Default display duration for still-image clips, in seconds. */
 export const DEFAULT_STILL_DURATION = 3;
@@ -69,6 +70,8 @@ async function videoFileToClip(file: File): Promise<VideoClip> {
     width: video.videoWidth,
     height: video.videoHeight,
     thumbnail: thumbnailFrom(video, video.videoWidth, video.videoHeight),
+    startTime: 0,
+    transform: { ...DEFAULT_CLIP_TRANSFORM },
   };
   video.removeAttribute('src');
   video.load();
@@ -109,6 +112,8 @@ async function stillFileToClip(file: File): Promise<VideoClip> {
     width,
     height,
     thumbnail: thumbnailFrom(img, width, height),
+    startTime: 0,
+    transform: { ...DEFAULT_CLIP_TRANSFORM },
   };
 }
 

@@ -1,8 +1,10 @@
 import { useRef, useState } from 'react';
 import {
-  HalftoneParams, GridType, CanvasFormat, ExportFormat, FontInfo, TextAlign,
+  HalftoneParams, GridType, ExportFormat, FontInfo, TextAlign,
+  VideoClip, ClipTransform, TimelineAspect,
 } from '../types';
 import ColorField from './ColorField';
+import VideoCanvasControls from './VideoCanvasControls';
 
 interface Props {
   params: HalftoneParams;
@@ -16,11 +18,20 @@ interface Props {
   maskProgress: number | null;
   fontInfo: FontInfo | null;
   loadFont: (file: File) => void;
+  selectedClip: VideoClip | null;
+  onSetClipTransform: (id: string, transform: ClipTransform) => void;
+  onCenterClip: (id: string, axis: 'x' | 'y' | 'both') => void;
+  timelineAspect: TimelineAspect;
+  timelineResolution: number;
+  onSetTimelineAspect: (a: TimelineAspect) => void;
+  onSetTimelineResolution: (r: number) => void;
 }
 
 export default function ControlSidebar({
   params, onChange, onExport, onOpenCrop, onOpenVideoExport, hasVideoClips,
   hasImage, maskLoading, maskProgress, fontInfo, loadFont,
+  selectedClip, onSetClipTransform, onCenterClip,
+  timelineAspect, timelineResolution, onSetTimelineAspect, onSetTimelineResolution,
 }: Props) {
   const fontInputRef = useRef<HTMLInputElement>(null);
 
@@ -53,50 +64,17 @@ export default function ControlSidebar({
           className={`tab-btn${isVideo ? ' active' : ''}`}
           onClick={() => set('mode', 'video')}
         >
-          Video
+          Video<span className="tab-beta">Beta</span>
         </button>
       </div>
 
-      {!isText && (
-        <>
-          <SliderControl
-            label="Canvas Size"
-            value={params.canvasSize}
-            min={600}
-            max={4000}
-            step={100}
-            onChange={v => set('canvasSize', v)}
-            unit="px"
-          />
-
-          <div className="control-group">
-            <label className="control-label">Format</label>
-            <div className="toggle-group toggle-group--wrap">
-              {(
-                [
-                  ['auto', 'Fit Image'],
-                  ['din-portrait', 'DIN Hoch'],
-                  ['din-landscape', 'DIN Quer'],
-                  ['square', '1:1'],
-                ] as [CanvasFormat, string][]
-              ).map(([value, label]) => (
-                <button
-                  key={value}
-                  className={`toggle-btn${params.canvasFormat === value ? ' active' : ''}`}
-                  onClick={() => set('canvasFormat', value)}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {params.canvasFormat !== 'auto' && hasImage && isImage && (
-            <button className="position-btn" onClick={onOpenCrop}>
-              Bild positionieren…
-            </button>
-          )}
-        </>
+      {isImage && (
+        <div className="control-group">
+          <label className="control-label">Format &amp; Zuschnitt</label>
+          <button className="position-btn" onClick={onOpenCrop} disabled={!hasImage}>
+            {params.cropRect ? 'Format bearbeiten…' : 'Format & Zuschnitt festlegen…'}
+          </button>
+        </div>
       )}
 
       {isText && (
@@ -431,6 +409,19 @@ export default function ControlSidebar({
           </label>
         </div>
       </div>
+
+      {/* Video: format + per-clip position controls */}
+      {isVideo && (
+        <VideoCanvasControls
+          selectedClip={selectedClip}
+          onSetTransform={onSetClipTransform}
+          onCenter={onCenterClip}
+          aspect={timelineAspect}
+          resolution={timelineResolution}
+          onSetAspect={onSetTimelineAspect}
+          onSetResolution={onSetTimelineResolution}
+        />
+      )}
 
       {/* Export buttons */}
       {isVideo ? (
