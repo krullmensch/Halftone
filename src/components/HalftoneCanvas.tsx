@@ -1,25 +1,31 @@
-import { useEffect, useRef } from 'react';
+import { memo, useEffect, useRef } from 'react';
 import { HalftoneParams, ExportFormat, FontInfo, TextBox } from '../types';
 import type { SketchHandle } from '../types';
 import CanvasUpload from './CanvasUpload';
 import CanvasFontUpload from './CanvasFontUpload';
 import TextBoxEditor from './TextBoxEditor';
+import VideoUpload from './VideoUpload';
 
 interface Props {
   params: HalftoneParams;
   imageUrl: string | null;
   mask: ImageBitmap | null;
   registerExport: (fn: (format: ExportFormat) => void) => void;
+  /** Hands the live sketch handle to the parent (null on unmount) so the
+   *  video playback/export layer can drive it directly. */
+  registerSketch: (handle: SketchHandle | null) => void;
   loadFile: (file: File) => void;
   onRemove: () => void;
   fontInfo: FontInfo | null;
   loadFont: (file: File) => void;
   onTextBoxChange: (box: TextBox) => void;
+  hasVideoClips: boolean;
+  onAddVideoFiles: (files: File[]) => void;
 }
 
-export default function HalftoneCanvas({
-  params, imageUrl, mask, registerExport, loadFile, onRemove,
-  fontInfo, loadFont, onTextBoxChange,
+function HalftoneCanvas({
+  params, imageUrl, mask, registerExport, registerSketch, loadFile, onRemove,
+  fontInfo, loadFont, onTextBoxChange, hasVideoClips, onAddVideoFiles,
 }: Props) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -40,12 +46,14 @@ export default function HalftoneCanvas({
       handle.setParams(params);
       if (imageUrl) handle.setImage(imageUrl);
       if (mask) handle.setMask(mask);
+      registerSketch(handle);
     });
 
     return () => {
       cancelled = true;
       handle?.destroy();
       handleRef.current = null;
+      registerSketch(null);
     };
     // Intentionally only on mount/unmount — params and imageUrl have their own effects
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -78,6 +86,7 @@ export default function HalftoneCanvas({
   }, [registerExport]);
 
   const isText = params.mode === 'text';
+  const isVideo = params.mode === 'video';
 
   return (
     <div ref={wrapperRef} className="canvas-wrapper">
@@ -95,6 +104,10 @@ export default function HalftoneCanvas({
             />
           )}
         </>
+      ) : isVideo ? (
+        <>
+          {!hasVideoClips && <VideoUpload onAddFiles={onAddVideoFiles} />}
+        </>
       ) : (
         <>
           {!imageUrl && <CanvasUpload loadFile={loadFile} />}
@@ -106,3 +119,8 @@ export default function HalftoneCanvas({
     </div>
   );
 }
+
+// videoTime updates in App tick at ~4Hz while a video is playing; none of
+// this component's props change because of that, so memoizing it keeps the
+// p5 sketch subtree from re-rendering on every tick.
+export default memo(HalftoneCanvas);
