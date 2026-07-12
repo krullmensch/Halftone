@@ -24,7 +24,10 @@ function isTiff(file: File): boolean {
 }
 
 function isVideoFile(file: File): boolean {
-  return file.type.startsWith('video/');
+  // Browsers often leave file.type empty for containers they don't have a
+  // registered handler for (notably .mkv on macOS/Chrome), so fall back to
+  // the extension rather than silently dropping the file.
+  return file.type.startsWith('video/') || /\.(mp4|mov|webm|mkv|avi|m4v)$/i.test(file.name);
 }
 
 function isImageFile(file: File): boolean {

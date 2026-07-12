@@ -28,7 +28,7 @@ export default function VideoUpload({ onAddFiles }: Props) {
       <input
         ref={inputRef}
         type="file"
-        accept="video/mp4,video/quicktime,video/webm,image/jpeg,image/png,image/webp,image/tiff,.tif,.tiff"
+        accept="video/mp4,video/quicktime,video/webm,video/x-matroska,video/x-msvideo,.mp4,.mov,.webm,.mkv,.avi,image/jpeg,image/png,image/webp,image/tiff,.tif,.tiff"
         multiple
         onChange={handleChange}
         className="canvas-upload__input"
