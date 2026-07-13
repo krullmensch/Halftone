@@ -976,13 +976,16 @@ export function createSketch(container: HTMLElement): SketchHandle {
   ): HTMLCanvasElement {
     lastVideoFrame = { frame, w: frameW, h: frameH };
     rebuildSrcFromFrame(frame, frameW, frameH);
-    // p5 2.x's draw() is fully synchronous for a 2D canvas — after redraw()
-    // the canvas pixels are current, and the caller's drawImage() of this
-    // canvas forces any pending 2D rasterization to sync anyway. Waiting a
-    // requestAnimationFrame here (as this used to) only capped export speed at
-    // the display refresh rate and dropped to ~1fps whenever the tab was
-    // backgrounded, which is what made exports crawl.
-    p5Instance.redraw();
+    // Draw the frame synchronously by invoking the sketch's draw() directly
+    // rather than through p5's redraw(). In p5 2.x redraw() is async and its
+    // promise never settles under noLoop() (a post-draw step waits on the
+    // render loop we've stopped) — awaiting it hangs the export, while not
+    // awaiting it reads the canvas before draw() has run and exports one frozen
+    // frame for the whole clip. Our draw() is self-contained synchronous 2D
+    // work (no cumulative matrix state), so calling it directly leaves the
+    // canvas pixels current immediately, with no requestAnimationFrame wait
+    // (which capped speed at the refresh rate and stalled when backgrounded).
+    (p5Instance as unknown as { draw: () => void }).draw();
     return (p5Instance as any).canvas as HTMLCanvasElement;
   }
 
