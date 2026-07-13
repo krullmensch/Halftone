@@ -298,7 +298,7 @@ export interface SketchHandle {
   ): void;
   /** Enter full-resolution rendering for a video export session. Recreates
    *  buffers once; renderVideoFrame calls between begin/end reuse them. */
-  beginVideoExport(): Promise<void>;
+  beginVideoExport(): void;
   /** Leave full-resolution mode and restore the preview canvas. */
   endVideoExport(): void;
   /** Video export: render one frame (at full res inside a begin/endVideoExport

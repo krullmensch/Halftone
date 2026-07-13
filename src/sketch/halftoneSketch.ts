@@ -955,12 +955,15 @@ export function createSketch(container: HTMLElement): SketchHandle {
     p5Instance.redraw();
   }
 
-  async function beginVideoExport(): Promise<void> {
+  function beginVideoExport(): void {
     if (exportFullRes) return;
     exportFullRes = true;
+    // applyCanvasSize (resizeCanvas + createGraphics) is fully synchronous, and
+    // renderVideoFrame now draws synchronously via draw(), so the recreated
+    // buffers are ready for the very next frame with no wait. The old
+    // requestAnimationFrame settle here would hang the whole export whenever the
+    // tab was backgrounded (rAF is paused for hidden documents).
     applyCanvasSize(p5Instance);
-    // Buffers were recreated; wait a frame so p5 settles before first render.
-    await new Promise<void>(r => requestAnimationFrame(() => r()));
   }
 
   function endVideoExport(): void {

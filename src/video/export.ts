@@ -61,41 +61,6 @@ function abortError(): DOMException {
   return new DOMException('Export aborted', 'AbortError');
 }
 
-/** Create a muted <video> element preloaded and ready to be seeked. The element
- *  is attached to the DOM off-screen (NOT display:none) — a detached or
- *  display:none <video> gets its decode pipeline suspended by the browser, so
- *  seeks resolve but drawImage yields a stale first frame. Positioning it out of
- *  view keeps the decoder live while staying invisible. */
-function createVideoEl(clip: VideoClip): Promise<HTMLVideoElement> {
-  const el = document.createElement('video');
-  el.muted = true;
-  el.playsInline = true;
-  el.preload = 'auto';
-  el.crossOrigin = 'anonymous';
-  el.style.position = 'fixed';
-  el.style.left = '-10000px';
-  el.style.top = '0';
-  el.style.width = '2px';
-  el.style.height = '2px';
-  el.style.opacity = '0';
-  el.style.pointerEvents = 'none';
-  el.src = clip.src;
-  document.body.appendChild(el);
-  return new Promise<HTMLVideoElement>(resolve => {
-    const done = () => resolve(el);
-    // Wait for enough data that seeking can actually decode frames.
-    el.oncanplay = done;
-    el.onloadeddata = done;
-    el.onerror = done; // best-effort: draw a black frame rather than block export
-  });
-}
-
-/** Whether the browser can signal a decoded video frame is ready to paint. */
-function hasFrameCallback(el: HTMLVideoElement): boolean {
-  return typeof (el as unknown as { requestVideoFrameCallback?: unknown })
-    .requestVideoFrameCallback === 'function';
-}
-
 /** Preload a still's image element (decode() up front so drawImage never blocks). */
 function loadImage(src: string): Promise<HTMLImageElement> {
   const img = new Image();
@@ -109,43 +74,65 @@ function loadImage(src: string): Promise<HTMLImageElement> {
   });
 }
 
-/** Seek `el` to `time` seconds and resolve once a decoded frame for that time
- *  is actually ready to paint. Relies on requestVideoFrameCallback (fires only
- *  after a frame is available for compositing) when present — the plain
- *  'seeked' event can fire before the frame is decoded, which is what makes
- *  drawImage grab a stale frame and produce an all-identical-frames export.
- *  Falls back to 'seeked' + a guard timeout on browsers without rVFC. */
-function seekVideo(el: HTMLVideoElement, time: number): Promise<void> {
-  return new Promise<void>(resolve => {
-    let settled = false;
-    // Already at the target time and a frame is decoded → nothing to wait for.
-    if (Math.abs(el.currentTime - time) < 1e-3 && el.readyState >= 2) {
-      resolve();
-      return;
-    }
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      el.removeEventListener('seeked', onSeeked);
-      clearTimeout(timer);
-      resolve();
-    };
-    const onSeeked = () => {
-      if (hasFrameCallback(el)) {
-        // 'seeked' fired, but wait one more decoded-frame tick to be sure the
-        // pixels for `time` are actually available to drawImage.
-        (el as unknown as {
-          requestVideoFrameCallback(cb: () => void): number;
-        }).requestVideoFrameCallback(finish);
-      } else {
-        finish();
+/** The media time (in the source video's own timeline, seconds) a video clip
+ *  shows at timeline time `t`. Clamped to the clip's trimmed [inPoint, outPoint]
+ *  so trailing frames hold the last visible frame rather than running past it. */
+function clipMediaTime(clip: VideoClip, t: number): number {
+  return Math.min(clip.outPoint, Math.max(clip.inPoint, clip.inPoint + (t - clip.startTime)));
+}
+
+/** Per-clip sequential decoder: a mediabunny CanvasSink pulled in lockstep with
+ *  the export frame loop. `next()` yields the decoded canvas for the clip's next
+ *  active frame; because the timestamps are monotonic the sink decodes each
+ *  packet at most once (no per-frame seeking, which is what made export crawl). */
+interface ClipDecoder {
+  input: import('mediabunny').Input;
+  next(): Promise<CanvasImageSource | null>;
+  /** Release the decode iterator (closing any in-flight VideoSamples) and the
+   *  input. Safe to call whether the export finished or was aborted midway. */
+  dispose(): Promise<void>;
+}
+
+/** Build a decoder for one video clip. `frameTimes` are the media timestamps
+ *  (ascending) for exactly the frames where the clip is active, in loop order.
+ *  Returns null if the clip's blob has no decodable video track. */
+async function createClipDecoder(
+  clip: VideoClip,
+  frameTimes: number[],
+): Promise<ClipDecoder | null> {
+  const { Input, BlobSource, ALL_FORMATS, CanvasSink } = await import('mediabunny');
+  // clip.src is an object URL for the imported File; fetch it back to a Blob.
+  const blob = await fetch(clip.src).then(r => r.blob());
+  const input = new Input({ source: new BlobSource(blob), formats: ALL_FORMATS });
+  const track = await input.getPrimaryVideoTrack();
+  if (!track || !(await track.canDecode())) {
+    input.dispose();
+    return null;
+  }
+  const sink = new CanvasSink(track);
+  const iter = sink.canvasesAtTimestamps(frameTimes);
+  return {
+    input,
+    async next() {
+      const { value, done } = await iter.next();
+      return done || !value ? null : value.canvas;
+    },
+    async dispose() {
+      // Returning the generator runs its cleanup, closing any VideoSamples the
+      // sink still holds (otherwise they leak and warn on GC — notably when the
+      // export is aborted before the iterator is fully drained).
+      try {
+        await iter.return(undefined);
+      } catch {
+        // ignore
       }
-    };
-    el.addEventListener('seeked', onSeeked);
-    // Longer guard than the frame path: a slow decode shouldn't drop the frame.
-    const timer = setTimeout(finish, 2000);
-    el.currentTime = time;
-  });
+      try {
+        await input.dispose();
+      } catch {
+        // ignore
+      }
+    },
+  };
 }
 
 /**
@@ -205,20 +192,40 @@ export async function exportVideo(opts: {
   const videoClips = timeline.clips.filter((c): c is VideoClip => c.type === 'video');
   const stillClips = timeline.clips.filter(c => c.type === 'still');
 
-  const videoEls = new Map<string, HTMLVideoElement>();
+  // For each video clip, the media timestamps (ascending) of exactly the frames
+  // where it is active, in loop order — the sequence fed to its CanvasSink.
+  const clipFrameTimes = new Map<string, number[]>();
+  for (const c of videoClips) {
+    const times: number[] = [];
+    for (let i = 0; i < totalFrames; i++) {
+      const t = i / fps;
+      if (t >= c.startTime && t < clipEnd(c)) times.push(clipMediaTime(c, t));
+    }
+    clipFrameTimes.set(c.id, times);
+  }
+
   const images = new Map<string, HTMLImageElement>();
+  const decoders = new Map<string, ClipDecoder>();
+  // The decoded canvas each active video clip is currently showing (advanced in
+  // lockstep with the frame loop); the compositor pulls from here.
+  const currentFrame = new Map<string, CanvasImageSource | null>();
 
   await Promise.all([
-    ...videoClips.map(async c => videoEls.set(c.id, await createVideoEl(c))),
+    ...videoClips.map(async c => {
+      const times = clipFrameTimes.get(c.id)!;
+      if (times.length === 0) return;
+      const dec = await createClipDecoder(c, times);
+      if (dec) decoders.set(c.id, dec);
+    }),
     ...stillClips.map(async c => images.set(c.id, await loadImage(c.src))),
   ]);
 
   const sources: CompositorSources = {
-    getVideoEl: id => videoEls.get(id) ?? null,
+    getVideoEl: id => currentFrame.get(id) ?? null,
     getImage: id => images.get(id) ?? null,
   };
 
-  await sketch.beginVideoExport();
+  sketch.beginVideoExport();
 
   // The sketch renders at its own full canvas resolution,
   // which generally differs from the requested output resolution — so
@@ -244,15 +251,15 @@ export async function exportVideo(opts: {
 
       const t = i / fps;
 
-      // Seek every video clip active at this frame to its exact media time.
+      // Advance each active clip's sequential decoder to this frame. Because the
+      // requested timestamps are monotonic, mediabunny decodes forward without
+      // re-seeking — the whole point of this path over per-frame <video> seeks.
       await Promise.all(
         videoClips
           .filter(c => t >= c.startTime && t < clipEnd(c))
-          .map(c => {
-            const el = videoEls.get(c.id);
-            if (!el) return Promise.resolve();
-            const mediaTime = Math.min(c.outPoint, Math.max(c.inPoint, c.inPoint + (t - c.startTime)));
-            return seekVideo(el, mediaTime);
+          .map(async c => {
+            const dec = decoders.get(c.id);
+            currentFrame.set(c.id, dec ? await dec.next() : null);
           }),
       );
 
@@ -285,13 +292,11 @@ export async function exportVideo(opts: {
     downloadBlob(blob, `halftone.${container}`);
   } finally {
     sketch.endVideoExport();
-    for (const el of videoEls.values()) {
-      el.pause();
-      el.removeAttribute('src');
-      el.load();
-      el.remove();
-    }
-    videoEls.clear();
+    await Promise.all(
+      [...decoders.values()].map(dec => dec.dispose()),
+    );
+    decoders.clear();
+    currentFrame.clear();
     images.clear();
   }
 }

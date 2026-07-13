@@ -2,11 +2,12 @@ import type { VideoTimelineData, VideoClip, TimelineTransition, WipeDirection } 
 import { clipEnd, clipDestRect } from './timeline';
 
 /** Frame sources the compositor pulls from. The caller is responsible for
- *  seeking video elements to the correct media time before calling
- *  drawTimelineFrame (preview: Remotion's <Video> keeps them frame-synced;
- *  export: the export loop sets .currentTime and awaits 'seeked'). */
+ *  supplying each video clip's frame for the current time before calling
+ *  drawTimelineFrame (preview: Remotion's <Video> keeps a real <video> element
+ *  frame-synced; export: mediabunny's CanvasSink decodes the frame to a canvas).
+ *  Any CanvasImageSource works since the compositor only drawImage()s it. */
 export interface CompositorSources {
-  getVideoEl(clipId: string): HTMLVideoElement | null;
+  getVideoEl(clipId: string): CanvasImageSource | null;
   getImage(clipId: string): HTMLImageElement | ImageBitmap | null;
 }
 
