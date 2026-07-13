@@ -6,6 +6,7 @@ import {
   DEFAULT_TIMELINE,
 } from './types';
 import { timelineDuration } from './video/timeline';
+import { fileToClip, isClipFile } from './video/importClips';
 import ControlSidebar from './components/ControlSidebar';
 import HalftoneCanvas from './components/HalftoneCanvas';
 import FormatCropModal from './components/FormatCropModal';
@@ -140,7 +141,6 @@ export default function App() {
   }, [handleVideoSeek]);
 
   const addVideoFiles = useCallback(async (files: File[]) => {
-    const { fileToClip, isClipFile } = await import('./video/importClips');
     for (const file of files) {
       if (!isClipFile(file)) continue;
       try {
