@@ -307,6 +307,6 @@ export interface SketchHandle {
     frame: CanvasImageSource,
     frameW: number,
     frameH: number,
-  ): Promise<HTMLCanvasElement>;
+  ): HTMLCanvasElement;
   destroy(): void;
 }

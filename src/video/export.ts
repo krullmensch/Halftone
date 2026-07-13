@@ -260,7 +260,7 @@ export async function exportVideo(opts: {
 
       onProgress({ phase: 'rendering', framesDone: i, totalFrames, software });
 
-      const canvas = await sketch.renderVideoFrame(
+      const canvas = sketch.renderVideoFrame(
         compositeCanvas,
         compositeCanvas.width,
         compositeCanvas.height,
