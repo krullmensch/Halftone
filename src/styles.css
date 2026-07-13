@@ -584,7 +584,8 @@ body {
 }
 
 .canvas-upload:hover,
-.canvas-upload:focus-visible {
+.canvas-upload:focus-visible,
+.canvas-upload--dragover {
   border-color: var(--accent);
   background: #000;
   outline: none;

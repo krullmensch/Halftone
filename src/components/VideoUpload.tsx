@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 
 interface Props {
   onAddFiles: (files: File[]) => void;
@@ -6,6 +6,7 @@ interface Props {
 
 export default function VideoUpload({ onAddFiles }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const [dragOver, setDragOver] = useState(false);
 
   function handleChange(e: React.ChangeEvent<HTMLInputElement>) {
     const files = e.target.files;
@@ -13,11 +14,24 @@ export default function VideoUpload({ onAddFiles }: Props) {
     e.target.value = '';
   }
 
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault();
+    setDragOver(false);
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) onAddFiles(files);
+  }
+
   return (
     <button
       type="button"
-      className="canvas-upload"
+      className={`canvas-upload${dragOver ? ' canvas-upload--dragover' : ''}`}
       onClick={() => inputRef.current?.click()}
+      onDragOver={e => {
+        e.preventDefault();
+        setDragOver(true);
+      }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={handleDrop}
     >
       <svg className="canvas-upload__icon" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
         <path d="M12 16V4M12 4l-4 4M12 4l4 4" />
